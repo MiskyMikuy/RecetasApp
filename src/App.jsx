@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-
 // ─── STORAGE (localStorage para deploy standalone) ───────────────────────────
 const sget = (key) => {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
@@ -8,13 +7,11 @@ const sget = (key) => {
 const sset = (key, val) => {
   try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 };
-
 const KEY_USERS   = "recetapp:users";
 const KEY_SESSION = "recetapp:session";
 const kIng  = (u) => `recetapp:${u}:ingredients`;
 const kRec  = (u) => `recetapp:${u}:recipes`;
 const kBiz  = (u) => `recetapp:${u}:business`;
-
 // ─── DEFAULT DATA ─────────────────────────────────────────────────────────────
 const DEFAULT_INGREDIENTS = [
   { id:1,  name:"Harina 000",     category:"Secos",   unit:"kg",  buyPrice:450,  buyQty:1,    wastePct:0  },
@@ -30,7 +27,6 @@ const DEFAULT_INGREDIENTS = [
   { id:11, name:"Dulce de leche", category:"Dulces",  unit:"kg",  buyPrice:2400, buyQty:1,    wastePct:2  },
   { id:12, name:"Nueces",         category:"Frutas",  unit:"kg",  buyPrice:4500, buyQty:1,    wastePct:10 },
 ];
-
 const DEFAULT_BUSINESS = {
   fixedCosts: [
     { id:1, name:"Alquiler / local",           amount:25000 },
@@ -45,7 +41,6 @@ const DEFAULT_BUSINESS = {
   ivaPct:       21,
   otherVarPct:  2,
 };
-
 const DEFAULT_RECIPES = [
   {
     id:1, name:"Medialunas de manteca", category:"Panadería", portions:24, profitPct:40,
@@ -66,19 +61,16 @@ const DEFAULT_RECIPES = [
     ]
   },
 ];
-
 // ─── CALCULATIONS ─────────────────────────────────────────────────────────────
 function unitCost(ing) {
   const base = ing.buyQty > 0 ? ing.buyPrice / ing.buyQty : 0;
   return ing.wastePct > 0 ? base / (1 - ing.wastePct / 100) : base;
 }
-
 function calcRecipe(recipe, ingredients, business) {
   const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfPerUnit  = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
   const varPct     = ((business.deliveryPct||0) + (business.ivaPct||0) + (business.otherVarPct||0)) / 100;
-
   let mpTotal = 0;
   const lines = recipe.ingredients.map(ri => {
     const ing = ingMap[ri.ingredientId];
@@ -88,7 +80,6 @@ function calcRecipe(recipe, ingredients, business) {
     mpTotal  += sub;
     return { ing, qty: ri.qty, unitCost: uc, subtotal: sub };
   }).filter(Boolean);
-
   const mpPerPortion   = recipe.portions > 0 ? mpTotal / recipe.portions : 0;
   const subtotalDirect = mpPerPortion + cfPerUnit;
   const varCost        = subtotalDirect * varPct;
@@ -98,11 +89,9 @@ function calcRecipe(recipe, ingredients, business) {
   const roundedPrice   = Math.ceil(suggestedPrice / 50) * 50;
   const realProfit     = roundedPrice - totalCost;
   const realProfitPct  = roundedPrice > 0 ? (realProfit / roundedPrice) * 100 : 0;
-
   return { lines, mpTotal, mpPerPortion, cfPerUnit, varCost, varPct,
            totalCost, suggestedPrice, roundedPrice, realProfit, realProfitPct };
 }
-
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
 function exportCSV(recipes, ingredients, business) {
   const S = ";";
@@ -132,23 +121,15 @@ function exportCSV(recipes, ingredients, business) {
   a.href = url; a.download = "RecetApp_Costeo.csv"; a.click();
   URL.revokeObjectURL(url);
 }
-
 // ─── PARSE CSV/SHEET para importar ingredientes ───────────────────────────────
-// Columnas esperadas (case-insensitive, cualquier orden):
-// nombre | categoría | unidad | precio | cantidad | merma
 function parseIngredientsCSV(text) {
-  // Detectar separador
   const firstLine = text.split(/\r?\n/)[0];
   const sep = firstLine.includes(";") ? ";" : ",";
-
   const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) throw new Error("El archivo debe tener encabezado y al menos una fila de datos.");
-
   const headers = lines[0].split(sep).map(h =>
     h.trim().toLowerCase().replace(/[^a-záéíóúüñ0-9]/gi, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   );
-
-  // Mapeo flexible de columnas
   const colMap = {
     name:      ["nombre", "ingrediente", "name"],
     category:  ["categoria", "category", "rubro", "tipo"],
@@ -157,7 +138,6 @@ function parseIngredientsCSV(text) {
     buyQty:    ["cantidad", "qty", "cantidadcompra", "bulto"],
     wastePct:  ["merma", "waste", "mermapct", "wastePct"],
   };
-
   const idx = {};
   for (const [key, aliases] of Object.entries(colMap)) {
     for (const alias of aliases) {
@@ -165,20 +145,16 @@ function parseIngredientsCSV(text) {
       if (i !== -1) { idx[key] = i; break; }
     }
   }
-
   if (idx.name === undefined) throw new Error("No se encontró la columna 'Nombre' en el archivo.");
-
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(sep).map(c => c.trim().replace(/^"|"$/g, ""));
     const name = cols[idx.name]?.trim();
     if (!name) continue;
-
     const toNum = (v) => {
       if (v === undefined || v === "" || v === null) return 0;
       return parseFloat(v.replace(",", ".")) || 0;
     };
-
     rows.push({
       name,
       category: cols[idx.category]?.trim() || "General",
@@ -188,11 +164,9 @@ function parseIngredientsCSV(text) {
       wastePct: toNum(cols[idx.wastePct]),
     });
   }
-
   if (rows.length === 0) throw new Error("No se encontraron filas válidas en el archivo.");
   return rows;
 }
-
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
 function Pill({ children, color = "emerald" }) {
   const map = {
@@ -204,7 +178,6 @@ function Pill({ children, color = "emerald" }) {
   };
   return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${map[color] || map.emerald}`}>{children}</span>;
 }
-
 function StatCard({ label, value, sub, accent = "emerald" }) {
   const map = {
     emerald: "border-l-emerald-500 bg-emerald-50",
@@ -220,8 +193,7 @@ function StatCard({ label, value, sub, accent = "emerald" }) {
     </div>
   );
 }
-
-// ─── MODAL — FIX: click fuera NO cierra (solo el botón ×) ────────────────────
+// ─── MODAL ────────────────────────────────────────────────────────────────────
 function Modal({ title, onClose, children, wide = false }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -237,7 +209,6 @@ function Modal({ title, onClose, children, wide = false }) {
     </div>
   );
 }
-
 function Field({ label, children }) {
   return (
     <div>
@@ -246,7 +217,6 @@ function Field({ label, children }) {
     </div>
   );
 }
-
 function TextInput({ value, onChange, type = "text", placeholder, suffix, step, min, max }) {
   return (
     <div className="relative">
@@ -259,7 +229,6 @@ function TextInput({ value, onChange, type = "text", placeholder, suffix, step, 
     </div>
   );
 }
-
 function Btn({ children, onClick, variant = "primary", size = "md", disabled = false, className = "" }) {
   const v = {
     primary:   "bg-emerald-600 hover:bg-emerald-700 text-white",
@@ -277,13 +246,11 @@ function Btn({ children, onClick, variant = "primary", size = "md", disabled = f
     </button>
   );
 }
-
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ username: "", password: "", confirm: "" });
   const [error, setError] = useState("");
-
   const handle = () => {
     setError("");
     const users = sget(KEY_USERS) || {};
@@ -303,9 +270,7 @@ function LoginScreen({ onLogin }) {
     sset(KEY_SESSION, { username: form.username });
     onLogin(form.username);
   };
-
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-
   return (
     <div className="min-h-screen flex items-center justify-center p-4"
          style={{ background: "linear-gradient(135deg,#064e3b 0%,#065f46 50%,#047857 100%)" }}>
@@ -347,15 +312,13 @@ function LoginScreen({ onLogin }) {
     </div>
   );
 }
-
 // ─── IMPORT INGREDIENTS MODAL ─────────────────────────────────────────────────
 function ImportIngredientsModal({ onClose, onImport }) {
-  const [step, setStep]         = useState("upload");   // upload | preview | done
+  const [step, setStep]         = useState("upload");
   const [preview, setPreview]   = useState([]);
   const [error, setError]       = useState("");
   const [fileName, setFileName] = useState("");
   const fileRef = useRef();
-
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -373,17 +336,14 @@ function ImportIngredientsModal({ onClose, onImport }) {
     };
     reader.readAsText(file, "UTF-8");
   };
-
   const handleImport = () => {
     onImport(preview);
     setStep("done");
   };
-
   return (
     <Modal title="Importar ingredientes desde CSV / Excel" onClose={onClose} wide>
       {step === "upload" && (
         <div className="space-y-5">
-          {/* Instrucciones */}
           <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 text-sm text-sky-800 space-y-2">
             <p className="font-semibold">📋 Cómo preparar el archivo</p>
             <p>Exportá tu planilla como <strong>CSV</strong> (desde Excel: Archivo → Guardar como → CSV UTF-8).</p>
@@ -414,8 +374,6 @@ function ImportIngredientsModal({ onClose, onImport }) {
             <p className="text-xs text-sky-600 mt-1">* Columna obligatoria. Las demás tienen valores por defecto si faltan.</p>
             <p className="text-xs text-sky-600">Los ingredientes existentes (mismo nombre) se <strong>actualizan</strong>. Los nuevos se <strong>agregan</strong>.</p>
           </div>
-
-          {/* Botón descarga plantilla */}
           <button
             onClick={() => {
               const content = "sep=;\nNombre;Categoría;Unidad;Precio;Cantidad;Merma\nHarina 000;Secos;kg;450;1;0\nManteca;Lácteos;kg;2100;1;3\n";
@@ -428,8 +386,6 @@ function ImportIngredientsModal({ onClose, onImport }) {
           >
             ⬇️ Descargar plantilla CSV
           </button>
-
-          {/* Drop zone */}
           <div
             onClick={() => fileRef.current.click()}
             className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all"
@@ -439,22 +395,18 @@ function ImportIngredientsModal({ onClose, onImport }) {
             <p className="text-xs text-gray-400 mt-1">CSV (separado por comas o punto y coma)</p>
             <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
           </div>
-
           {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
-
           <div className="flex justify-end">
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
           </div>
         </div>
       )}
-
       {step === "preview" && (
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg">
             <span>📄</span><span className="font-medium">{fileName}</span>
             <span className="ml-auto text-emerald-600 font-semibold">{preview.length} ingredientes encontrados</span>
           </div>
-
           <div className="overflow-x-auto max-h-72 rounded-xl border border-gray-100">
             <table className="w-full text-xs min-w-[500px]">
               <thead className="sticky top-0 bg-gray-50 border-b border-gray-100">
@@ -478,11 +430,9 @@ function ImportIngredientsModal({ onClose, onImport }) {
               </tbody>
             </table>
           </div>
-
           <p className="text-xs text-gray-500 bg-amber-50 border border-amber-100 px-3 py-2 rounded-lg">
             ⚠️ Los ingredientes con el mismo nombre serán <strong>actualizados</strong>. Los nuevos se <strong>agregarán</strong> a tu lista.
           </p>
-
           <div className="flex gap-3 justify-end">
             <Btn variant="secondary" onClick={() => { setStep("upload"); setPreview([]); setFileName(""); }}>
               ← Volver
@@ -493,7 +443,6 @@ function ImportIngredientsModal({ onClose, onImport }) {
           </div>
         </div>
       )}
-
       {step === "done" && (
         <div className="text-center py-8 space-y-3">
           <div className="text-5xl">✅</div>
@@ -505,12 +454,10 @@ function ImportIngredientsModal({ onClose, onImport }) {
     </Modal>
   );
 }
-
 // ─── INLINE NEW INGREDIENT (desde RecipesTab) ─────────────────────────────────
 function QuickAddIngredientModal({ onClose, onSave }) {
   const [form, setForm] = useState({ name:"", category:"", unit:"kg", buyPrice:"", buyQty:"1", wastePct:"0" });
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-
   const previewCost = () => {
     const qty = +form.buyQty || 0;
     const price = +form.buyPrice || 0;
@@ -519,13 +466,11 @@ function QuickAddIngredientModal({ onClose, onSave }) {
     const base = price / qty;
     return waste > 0 ? (base / (1 - waste / 100)).toFixed(4) : base.toFixed(4);
   };
-
   const save = () => {
     if (!form.name.trim()) return;
     const ing = { ...form, id: Date.now(), buyPrice: +form.buyPrice, buyQty: +form.buyQty, wastePct: +form.wastePct };
     onSave(ing);
   };
-
   return (
     <Modal title="Agregar nuevo ingrediente" onClose={onClose}>
       <div className="grid grid-cols-2 gap-4">
@@ -561,21 +506,17 @@ function QuickAddIngredientModal({ onClose, onSave }) {
     </Modal>
   );
 }
-
 // ─── INGREDIENTS ──────────────────────────────────────────────────────────────
 function IngredientsTab({ ingredients, setIngredients, user }) {
-  const [modal, setModal] = useState(null);  // null | "form" | "import"
+  const [modal, setModal] = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({});
-
   const filtered = ingredients.filter(i =>
     i.name.toLowerCase().includes(search.toLowerCase()) ||
     i.category.toLowerCase().includes(search.toLowerCase())
   );
-
   const openAdd  = () => { setForm({ name:"", category:"", unit:"kg", buyPrice:"", buyQty:"1", wastePct:"0" }); setModal("form"); };
   const openEdit = (ing) => { setForm({ ...ing, buyPrice: ing.buyPrice+"", buyQty: ing.buyQty+"", wastePct: ing.wastePct+"" }); setModal("form"); };
-
   const saveIng = () => {
     const ing = { ...form, buyPrice: +form.buyPrice, buyQty: +form.buyQty, wastePct: +form.wastePct };
     let updated;
@@ -583,32 +524,25 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
     else         { updated = ingredients.map(i => i.id === ing.id ? ing : i); }
     setIngredients(updated); sset(kIng(user), updated); setModal(null);
   };
-
   const del = id => {
     const updated = ingredients.filter(i => i.id !== id);
     setIngredients(updated); sset(kIng(user), updated);
   };
-
-  // Importar desde CSV — merge por nombre
   const handleImport = (rows) => {
     const existing = [...ingredients];
     rows.forEach(row => {
       const idx = existing.findIndex(i => i.name.toLowerCase().trim() === row.name.toLowerCase().trim());
       if (idx !== -1) {
-        // Actualizar
         existing[idx] = { ...existing[idx], ...row };
       } else {
-        // Agregar nuevo
         existing.push({ ...row, id: Date.now() + Math.random() });
       }
     });
     setIngredients(existing);
     sset(kIng(user), existing);
   };
-
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"emerald", Aceites:"violet", Dulces:"rose", Frutas:"emerald" };
-
   const previewCost = () => {
     const qty = +form.buyQty || 0;
     const price = +form.buyPrice || 0;
@@ -617,7 +551,6 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
     const base = price / qty;
     return waste > 0 ? (base / (1 - waste / 100)).toFixed(4) : base.toFixed(4);
   };
-
   return (
     <div>
       <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
@@ -628,7 +561,6 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
           <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
         </div>
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
         <table className="w-full text-sm min-w-[640px]">
           <thead>
@@ -665,8 +597,6 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
           </div>
         )}
       </div>
-
-      {/* Modal agregar / editar */}
       {modal === "form" && (
         <Modal title={form.id ? "Editar ingrediente" : "Nuevo ingrediente"} onClose={() => setModal(null)}>
           <div className="grid grid-cols-2 gap-4">
@@ -701,15 +631,12 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
           </div>
         </Modal>
       )}
-
-      {/* Modal importar CSV */}
       {modal === "import" && (
         <ImportIngredientsModal onClose={() => setModal(null)} onImport={(rows) => { handleImport(rows); }} />
       )}
     </div>
   );
 }
-
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, user }) {
   const update = (key, val) => {
@@ -728,10 +655,8 @@ function BusinessTab({ business, setBusiness, user }) {
     const upd = { ...business, fixedCosts: business.fixedCosts.filter(c => c.id !== id) };
     setBusiness(upd); sset(kBiz(user), upd);
   };
-
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -739,7 +664,6 @@ function BusinessTab({ business, setBusiness, user }) {
         <StatCard label="Unidades estimadas/mes"  value={business.monthlyUnits} accent="sky" />
         <StatCard label="Costo fijo x unidad"      value={`$${cfUnit.toFixed(2)}`} sub="Aplicado a cada receta" accent="emerald" />
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">🏢 Costos fijos mensuales</h3>
         <div className="space-y-2">
@@ -758,7 +682,6 @@ function BusinessTab({ business, setBusiness, user }) {
         </div>
         <button onClick={addCost} className="mt-3 text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">📈 Producción y costos variables</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -779,13 +702,24 @@ function BusinessTab({ business, setBusiness, user }) {
     </div>
   );
 }
-
 // ─── RECIPES ─────────────────────────────────────────────────────────────────
 function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, user }) {
-  const [selected, setSelected]         = useState(recipes[0]?.id ?? null);
-  const [modal, setModal]               = useState(null);   // null | "form" | "quickIng"
-  const [form, setForm]                 = useState({});
-  const [quickIngTarget, setQuickIngTarget] = useState(null); // idx de línea que disparó el quick-add
+  const [selected, setSelected]             = useState(recipes[0]?.id ?? null);
+  const [modal, setModal]                   = useState(null);
+  const [form, setForm]                     = useState({});
+  const [quickIngTarget, setQuickIngTarget] = useState(null);
+
+  // ─── FIX: mantener selected sincronizado con la lista de recetas ───────────
+  useEffect(() => {
+    if (selected === null && recipes.length > 0) {
+      // No había selección pero ahora hay recetas → seleccionar la primera
+      setSelected(recipes[0].id);
+    } else if (selected !== null && !recipes.find(r => r.id === selected)) {
+      // La receta seleccionada ya no existe → ir a la primera disponible
+      setSelected(recipes[0]?.id ?? null);
+    }
+  }, [recipes, selected]);
+  // ──────────────────────────────────────────────────────────────────────────
 
   const openAdd  = () => {
     setForm({ name:"", category:"", portions:"4", profitPct:"40", ingredients:[] });
@@ -795,10 +729,8 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     setForm({ ...r, portions: r.portions+"", profitPct: r.profitPct+"" });
     setModal("form");
   };
-
   const saveRecipe = () => {
     const r = { ...form, portions: +form.portions, profitPct: +form.profitPct };
-    // Filtrar líneas incompletas antes de guardar
     r.ingredients = (r.ingredients || [])
       .filter(l => l.ingredientId !== "" && l.ingredientId !== undefined && l.qty !== "" && +l.qty > 0)
       .map(l => ({ ingredientId: +l.ingredientId, qty: +l.qty }));
@@ -810,29 +742,22 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     setModal(null);
     setSelected(r.id);
   };
-
   const del = id => {
     const updated = recipes.filter(r => r.id !== id);
     setRecipes(updated); sset(kRec(user), updated);
     if (selected === id) setSelected(updated[0]?.id ?? null);
   };
-
   const addLine    = () => setForm(p => ({ ...p, ingredients: [...(p.ingredients || []), { ingredientId: "", qty: "" }] }));
   const updateLine = (idx, k, v) => setForm(p => {
     const ings = [...(p.ingredients || [])];
-    ings[idx] = { ...ings[idx], [k]: k === "qty" ? v : v };
+    ings[idx] = { ...ings[idx], [k]: v };
     return { ...p, ingredients: ings };
   });
   const removeLine = idx => setForm(p => ({ ...p, ingredients: (p.ingredients || []).filter((_, i) => i !== idx) }));
-
-  // Quick-add un ingrediente nuevo desde el modal de recetas
   const handleQuickIngSave = (newIng) => {
-    // Guardar en la lista global de ingredientes
     const updatedIngs = [...ingredients, newIng];
     setIngredients(updatedIngs);
     sset(kIng(user), updatedIngs);
-
-    // Asignar ese ingrediente a la línea que lo pidió
     if (quickIngTarget !== null) {
       setForm(p => {
         const ings = [...(p.ingredients || [])];
@@ -840,15 +765,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
         return { ...p, ingredients: ings };
       });
     }
-    setModal("form");      // volver al form de receta
+    setModal("form");
     setQuickIngTarget(null);
   };
-
   const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
-
   const recipe = recipes.find(r => r.id === selected);
   const calc   = recipe ? calcRecipe(recipe, ingredients, business) : null;
-
   const liveCalc = (() => {
     if (!form.ingredients?.length || !form.portions) return null;
     const preview = {
@@ -862,7 +784,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     if (!preview.ingredients.length) return null;
     try { return calcRecipe(preview, ingredients, business); } catch { return null; }
   })();
-
   return (
     <div className="flex gap-5">
       {/* Sidebar list */}
@@ -886,7 +807,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           <div className="text-center py-8 text-gray-400 text-sm"><div className="text-3xl mb-2">🍽️</div>Sin recetas aún</div>
         )}
       </div>
-
       {/* Detail panel */}
       <div className="flex-1 min-w-0">
         {recipe && calc ? (
@@ -901,14 +821,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 <button onClick={() => del(recipe.id)}   className="bg-white/20 hover:bg-rose-500  text-white text-sm px-3 py-1.5 rounded-lg transition-colors">🗑</button>
               </div>
             </div>
-
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
               <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`}                          accent="rose" />
               <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`}                     accent="amber" />
               <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="emerald" />
               <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />
             </div>
-
             <div className="px-5 pb-3">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Ingredientes</h3>
               <div className="overflow-x-auto">
@@ -934,7 +852,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 </table>
               </div>
             </div>
-
             <div className="mx-5 mb-5 rounded-xl overflow-hidden text-sm border border-gray-100">
               {[
                 ["Costo MP total",                                `$${calc.mpTotal.toFixed(2)}`,       "bg-white"],
@@ -962,7 +879,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           </div>
         )}
       </div>
-
       {/* ── Modal form receta ── */}
       {modal === "form" && (
         <Modal title={form.id ? "Editar receta" : "Nueva receta"} onClose={() => setModal(null)} wide>
@@ -985,7 +901,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 </Field>
               </div>
             </div>
-
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-semibold text-gray-700">Ingredientes</h4>
@@ -1033,7 +948,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 )}
               </div>
             </div>
-
             {liveCalc && (
               <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
                 <p className="text-xs text-emerald-600 font-semibold uppercase tracking-wide mb-3">Vista previa en tiempo real</p>
@@ -1051,7 +965,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           </div>
         </Modal>
       )}
-
       {/* ── Modal quick-add ingrediente (desde recetas) ── */}
       {modal === "quickIng" && (
         <QuickAddIngredientModal
@@ -1062,12 +975,10 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     </div>
   );
 }
-
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard({ recipes, ingredients, business }) {
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
-
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -1076,7 +987,6 @@ function Dashboard({ recipes, ingredients, business }) {
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h3 className="font-semibold text-gray-700">Resumen de recetas</h3>
@@ -1118,7 +1028,6 @@ function Dashboard({ recipes, ingredients, business }) {
     </div>
   );
 }
-
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser]               = useState(null);
@@ -1127,7 +1036,6 @@ export default function App() {
   const [ingredients, setIngredients] = useState([]);
   const [recipes, setRecipes]         = useState([]);
   const [business, setBusiness]       = useState(DEFAULT_BUSINESS);
-
   useEffect(() => {
     const session = sget(KEY_SESSION);
     if (session?.username) {
@@ -1136,35 +1044,28 @@ export default function App() {
     }
     setLoading(false);
   }, []);
-
   const loadData = (username) => {
     setIngredients(sget(kIng(username)) || DEFAULT_INGREDIENTS);
     setRecipes    (sget(kRec(username)) || DEFAULT_RECIPES);
     setBusiness   (sget(kBiz(username)) || DEFAULT_BUSINESS);
   };
-
   const handleLogin = (username) => { loadData(username); setUser(username); };
-
   const logout = () => {
     sset(KEY_SESSION, null);
     setUser(null); setIngredients([]); setRecipes([]); setBusiness(DEFAULT_BUSINESS); setTab("dashboard");
   };
-
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center bg-emerald-50">
       <div className="text-emerald-600 text-xl font-medium">🍽️ Cargando...</div>
     </div>
   );
-
   if (!user) return <LoginScreen onLogin={handleLogin} />;
-
   const TABS = [
     { id:"dashboard",   label:"📊 Resumen"     },
     { id:"recipes",     label:"🍽️ Recetas"     },
     { id:"ingredients", label:"📦 Ingredientes" },
     { id:"business",    label:"⚙️ Costos"       },
   ];
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-40">
@@ -1201,7 +1102,6 @@ export default function App() {
           ))}
         </div>
       </header>
-
       <main className="max-w-7xl mx-auto px-4 py-5">
         {tab === "dashboard"   && <Dashboard      recipes={recipes} ingredients={ingredients} business={business} />}
         {tab === "recipes"     && <RecipesTab     recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} user={user} />}
