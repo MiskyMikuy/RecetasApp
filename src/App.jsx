@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL;
 const SUPABASE_KEY  = process.env.REACT_APP_SUPABASE_ANON_KEY;
-const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY); 
+const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── CALCULATIONS ─────────────────────────────────────────────────────────────
 function unitCost(ing) {
@@ -37,6 +37,59 @@ function calcRecipe(recipe, ingredients, business) {
   const realProfitPct  = roundedPrice > 0 ? (realProfit / roundedPrice) * 100 : 0;
   return { lines, mpTotal, mpPerPortion, cfPerUnit, varCost, varPct,
            totalCost, suggestedPrice, roundedPrice, realProfit, realProfitPct };
+}
+
+// ─── GUÍA DE UNIDADES ─────────────────────────────────────────────────────────
+const UNIT_GUIDE = [
+  { unit:"kg",  recipe:"Decimales: 0.250 = 250 g  ·  0.500 = 500 g  ·  1.000 = 1 kg" },
+  { unit:"lt",  recipe:"Decimales: 0.100 = 100 ml  ·  0.250 = 250 ml  ·  1.000 = 1 lt" },
+  { unit:"ml",  recipe:"Directo: 5 = 5 ml  ·  100 = 100 ml  ·  500 = 500 ml" },
+  { unit:"u",   recipe:"Enteros o medios: 1 = 1 unidad  ·  0.5 = media  ·  12 = docena" },
+  { unit:"g",   recipe:"Directo: 50 = 50 g  ·  250 = 250 g  ·  500 = 500 g" },
+];
+
+// ─── PARSE CSV INGREDIENTES ───────────────────────────────────────────────────
+function parseIngredientsCSV(text) {
+  const firstLine = text.split(/\r?\n/)[0];
+  const sep = firstLine.includes(";") ? ";" : ",";
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim() && !l.startsWith("sep="));
+  if (lines.length < 2) throw new Error("El archivo debe tener encabezado y al menos una fila.");
+  const headers = lines[0].split(sep).map(h =>
+    h.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"")
+  );
+  const colMap = {
+    name:      ["nombre","ingrediente","name"],
+    category:  ["categoria","category","rubro","tipo"],
+    unit:      ["unidad","unit","medida"],
+    buy_price: ["precio","price","costo","preciocompra"],
+    buy_qty:   ["cantidad","qty","cantidadcompra","bulto"],
+    waste_pct: ["merma","waste","mermapct"],
+  };
+  const idx = {};
+  for (const [key, aliases] of Object.entries(colMap)) {
+    for (const alias of aliases) {
+      const i = headers.indexOf(alias);
+      if (i !== -1) { idx[key] = i; break; }
+    }
+  }
+  if (idx.name === undefined) throw new Error("No se encontró la columna Nombre.");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(sep).map(c => c.trim().replace(/^"|"$/g,""));
+    const name = cols[idx.name]?.trim();
+    if (!name) continue;
+    const toNum = v => (v === undefined || v === "") ? 0 : parseFloat(v.replace(",",".")) || 0;
+    rows.push({
+      name,
+      category:  cols[idx.category]?.trim() || "General",
+      unit:      cols[idx.unit]?.trim()      || "kg",
+      buy_price: toNum(cols[idx.buy_price]),
+      buy_qty:   toNum(cols[idx.buy_qty]) || 1,
+      waste_pct: toNum(cols[idx.waste_pct]),
+    });
+  }
+  if (rows.length === 0) throw new Error("No se encontraron filas válidas.");
+  return rows;
 }
 
 // ─── LOG DE ACTIVIDAD ─────────────────────────────────────────────────────────
@@ -395,6 +448,160 @@ function AdminPanel({ profile }) {
 }
 
 // ─── INGREDIENTS ──────────────────────────────────────────────────────────────
+
+// ─── IMPORT CSV MODAL ────────────────────────────────────────────────────────
+function ImportCSVModal({ onClose, onImport }) {
+  const [step, setStep]       = useState("upload");
+  const [preview, setPreview] = useState([]);
+  const [error, setError]     = useState("");
+  const [fileName, setFileName] = useState("");
+  const fileRef = useRef();
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name); setError("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const rows = parseIngredientsCSV(ev.target.result);
+        setPreview(rows); setStep("preview");
+      } catch (err) { setError(err.message); }
+    };
+    reader.readAsText(file, "UTF-8");
+  };
+
+  return (
+    <Modal title="Importar ingredientes desde CSV" onClose={onClose} wide>
+      {step === "upload" && (
+        <div className="space-y-5">
+          <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 text-sm text-sky-800 space-y-2">
+            <p className="font-semibold">📋 Formato del archivo</p>
+            <p>Columnas (en cualquier orden): <strong>Nombre · Categoría · Unidad · Precio · Cantidad · Merma</strong></p>
+            <p className="text-xs text-sky-600">Los ingredientes con el mismo nombre se <strong>actualizan</strong>. Los nuevos se <strong>agregan</strong>.</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm space-y-2">
+            <p className="font-semibold text-amber-800">📐 Guía de unidades de medida</p>
+            <table className="w-full text-xs mt-1">
+              <thead><tr className="text-amber-700"><th className="text-left py-1 w-12">Unidad</th><th className="text-left py-1">Cómo cargar en recetas</th></tr></thead>
+              <tbody>
+                {UNIT_GUIDE.map(g => (
+                  <tr key={g.unit} className="border-t border-amber-100">
+                    <td className="py-1.5 font-bold text-amber-700">{g.unit}</td>
+                    <td className="py-1.5 text-amber-800">{g.recipe}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button onClick={() => {
+            const c = "sep=;\nNombre;Categoría;Unidad;Precio;Cantidad;Merma\nHarina 000;Secos;kg;450;1;0\nManteca;Lácteos;kg;2100;1;3\n";
+            const blob = new Blob(["\uFEFF"+c],{type:"text/csv;charset=utf-8;"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href=url; a.download="plantilla_ingredientes.csv"; a.click();
+            URL.revokeObjectURL(url);
+          }} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium underline">
+            ⬇️ Descargar plantilla CSV
+          </button>
+          <div onClick={() => fileRef.current.click()}
+            className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all">
+            <div className="text-4xl mb-2">📂</div>
+            <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
+            <p className="text-xs text-gray-400 mt-1">CSV separado por comas o punto y coma</p>
+            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+          </div>
+          {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
+          <div className="flex justify-end"><Btn variant="secondary" onClick={onClose}>Cancelar</Btn></div>
+        </div>
+      )}
+      {step === "preview" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg">
+            <span>📄</span><span className="font-medium">{fileName}</span>
+            <span className="ml-auto text-emerald-600 font-semibold">{preview.length} ingredientes</span>
+          </div>
+          <div className="overflow-x-auto max-h-64 rounded-xl border border-gray-100">
+            <table className="w-full text-xs min-w-[480px]">
+              <thead className="sticky top-0 bg-gray-50 border-b border-gray-100">
+                <tr>{["Nombre","Categoría","Unidad","Precio","Cantidad","Merma %"].map(h=>(
+                  <th key={h} className="text-left px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {preview.map((r,i)=>(
+                  <tr key={i} className={`border-b border-gray-50 ${i%2===0?"bg-white":"bg-gray-50/40"}`}>
+                    <td className="px-3 py-2 font-medium text-gray-800">{r.name}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.category}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.unit}</td>
+                    <td className="px-3 py-2 text-gray-700">${r.buy_price?.toLocaleString("es-AR")}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.buy_qty}</td>
+                    <td className="px-3 py-2">{r.waste_pct>0?<Pill color="rose">{r.waste_pct}%</Pill>:<span className="text-gray-300">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex gap-3 justify-end">
+            <Btn variant="secondary" onClick={()=>{setStep("upload");setPreview([]);setFileName("");}}>← Volver</Btn>
+            <Btn onClick={()=>{onImport(preview);setStep("done");}}>✓ Importar {preview.length} ingredientes</Btn>
+          </div>
+        </div>
+      )}
+      {step === "done" && (
+        <div className="text-center py-8 space-y-3">
+          <div className="text-5xl">✅</div>
+          <p className="text-lg font-bold text-gray-800">¡Importación exitosa!</p>
+          <p className="text-sm text-gray-500">Se procesaron {preview.length} ingredientes.</p>
+          <Btn onClick={onClose} className="mt-2">Cerrar</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ─── QUICK-ADD INGREDIENTE (desde receta) ────────────────────────────────────
+function QuickAddIngredientModal({ onClose, onSave }) {
+  const [form, setForm] = useState({ name:"", category:"", unit:"kg", buy_price:"", buy_qty:"1", waste_pct:"0" });
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const previewCost = () => {
+    const qty=+form.buy_qty||0; const price=+form.buy_price||0; const waste=+form.waste_pct||0;
+    if(qty<=0) return "0.0000";
+    const base=price/qty;
+    return waste>0?(base/(1-waste/100)).toFixed(4):base.toFixed(4);
+  };
+  const save = () => {
+    if (!form.name.trim()) return;
+    onSave({ ...form, id: Date.now(), buy_price:+form.buy_price, buy_qty:+form.buy_qty, waste_pct:+form.waste_pct });
+  };
+  return (
+    <Modal title="Agregar nuevo ingrediente" onClose={onClose}>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="col-span-2">
+          <Field label="Nombre"><TextInput value={form.name} onChange={f("name")} placeholder="Ej: Harina 000" /></Field>
+        </div>
+        <Field label="Categoría"><TextInput value={form.category} onChange={f("category")} placeholder="Ej: Secos" /></Field>
+        <Field label="Unidad"><TextInput value={form.unit} onChange={f("unit")} placeholder="kg, lt, u, ml" /></Field>
+        <Field label="Precio de compra ($)"><TextInput value={form.buy_price} onChange={f("buy_price")} type="number" min="0" step="0.01" /></Field>
+        <Field label="Cantidad que comprás"><TextInput value={form.buy_qty} onChange={f("buy_qty")} type="number" min="0.001" step="0.001" /></Field>
+        <Field label="% Merma"><TextInput value={form.waste_pct} onChange={f("waste_pct")} type="number" min="0" max="100" step="0.1" suffix="%" /></Field>
+        <div className="bg-emerald-50 rounded-xl p-4 flex flex-col justify-center">
+          <p className="text-xs text-emerald-600 font-medium mb-1">Costo neto x unidad</p>
+          <p className="text-2xl font-bold text-emerald-700">${previewCost()}</p>
+        </div>
+      </div>
+      {form.unit && UNIT_GUIDE.find(g=>g.unit===form.unit) && (
+        <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-700">
+          💡 <strong>{form.unit}</strong>: {UNIT_GUIDE.find(g=>g.unit===form.unit).recipe}
+        </div>
+      )}
+      <div className="flex gap-3 mt-5 justify-end">
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.name.trim()}>Guardar ingrediente</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 function IngredientsTab({ ingredients, setIngredients, profile }) {
   const canEdit    = profile?.role !== "viewer";
   const [modal, setModal]   = useState(null);
@@ -451,7 +658,10 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
       <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ingrediente o categoría..."
                className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
-        {canEdit && <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>}
+        {canEdit && <div className="flex gap-2">
+            <Btn variant="secondary" onClick={() => setModal("import")}>⬆️ Importar CSV</Btn>
+            <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
+          </div>}
       </div>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
         <table className="w-full text-sm min-w-[640px]">
@@ -496,7 +706,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
               <Field label="Nombre"><TextInput value={form.name || ""} onChange={f("name")} placeholder="Ej: Harina 000" /></Field>
             </div>
             <Field label="Categoría"><TextInput value={form.category || ""} onChange={f("category")} placeholder="Ej: Secos" /></Field>
-            <Field label="Unidad"><TextInput value={form.unit || ""} onChange={f("unit")} placeholder="kg, lt, u" /></Field>
+            <Field label="Unidad"><TextInput value={form.unit || ""} onChange={f("unit")} placeholder="kg, lt, u, ml" /></Field>
             <Field label="Precio de compra ($)"><TextInput value={form.buy_price || ""} onChange={f("buy_price")} type="number" min="0" step="0.01" /></Field>
             <Field label="Cantidad que comprás"><TextInput value={form.buy_qty || ""} onChange={f("buy_qty")} type="number" min="0.001" step="0.001" /></Field>
             <Field label="% Merma"><TextInput value={form.waste_pct || "0"} onChange={f("waste_pct")} type="number" min="0" max="100" step="0.1" suffix="%" /></Field>
@@ -505,11 +715,33 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
               <p className="text-2xl font-bold text-emerald-700">${previewCost()}</p>
             </div>
           </div>
+          {form.unit && UNIT_GUIDE.find(g => g.unit === form.unit) && (
+            <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-700">
+              💡 <strong>{form.unit}</strong>: {UNIT_GUIDE.find(g => g.unit === form.unit).recipe}
+            </div>
+          )}
           <div className="flex gap-3 mt-5 justify-end">
             <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
             <Btn onClick={saveIng} disabled={saving}>{saving ? "Guardando..." : "Guardar"}</Btn>
           </div>
         </Modal>
+      )}
+      {modal === "import" && (
+        <ImportCSVModal onClose={() => setModal(null)} onImport={async (rows) => {
+          const existing = [...ingredients];
+          for (const row of rows) {
+            const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
+            if (idx !== -1) {
+              const { data } = await supabase.from("ingredients").update({...row, updated_by: profile.id}).eq("id", existing[idx].id).select().single();
+              if (data) existing[idx] = data;
+            } else {
+              const { data } = await supabase.from("ingredients").insert({...row, created_by: profile.id, updated_by: profile.id}).select().single();
+              if (data) existing.push(data);
+            }
+          }
+          setIngredients(existing);
+          await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
+        }} />
       )}
     </div>
   );
@@ -596,7 +828,9 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
   const [form, setForm]         = useState({});
-  const [saving, setSaving]     = useState(false);
+  const [saving, setSaving]       = useState(false);
+  const [quickIngTarget, setQuickIngTarget] = useState(null);
+  const [showUnitGuide, setShowUnitGuide]   = useState(false);
 
   useEffect(() => {
     if (selected === null && recipes.length > 0) setSelected(recipes[0].id);
@@ -654,6 +888,23 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     setRecipes(prev => prev.filter(r => r.id !== id));
     await logActivity(profile, "delete", "receta", name);
     if (selected === id) setSelected(recipes.find(r => r.id !== id)?.id ?? null);
+  };
+
+  const handleQuickIngSave = async (newIng) => {
+    const { data } = await supabase.from("ingredients")
+      .insert({...newIng, created_by: profile.id, updated_by: profile.id})
+      .select().single();
+    if (data) {
+      setIngredients(prev => [...prev, data]);
+      if (quickIngTarget !== null) {
+        setForm(p => {
+          const arr = [...(p.recipe_ingredients || [])];
+          arr[quickIngTarget] = { ...arr[quickIngTarget], ingredient_id: String(data.id) };
+          return { ...p, recipe_ingredients: arr };
+        });
+      }
+    }
+    setModal("form"); setQuickIngTarget(null);
   };
 
   const addLine    = () => setForm(p => ({ ...p, recipe_ingredients: [...(p.recipe_ingredients || []), { ingredient_id: "", qty: "" }] }));
@@ -800,8 +1051,26 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-semibold text-gray-700">Ingredientes</h4>
-                <button onClick={addLine} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
+                <div className="flex gap-3 items-center">
+                  <button onClick={() => setShowUnitGuide(v => !v)} className="text-xs text-amber-600 hover:text-amber-700 font-medium">📐 Guía de unidades</button>
+                  <button onClick={addLine} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
+                </div>
               </div>
+              {showUnitGuide && (
+                <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 mb-2">
+                  <p className="text-xs font-semibold text-amber-800 mb-2">📐 Las cantidades en recetas se ingresan en la misma unidad que la compra:</p>
+                  <table className="w-full text-xs">
+                    <tbody>
+                      {UNIT_GUIDE.map(g => (
+                        <tr key={g.unit} className="border-t border-amber-100">
+                          <td className="py-1 pr-3 font-bold text-amber-700 w-10">{g.unit}</td>
+                          <td className="py-1 text-amber-800">{g.recipe}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               <div className="space-y-2">
                 {(form.recipe_ingredients || []).map((line, idx) => {
                   const ingId = line.ingredient_id !== "" ? +line.ingredient_id : null;
@@ -810,9 +1079,15 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                   return (
                     <div key={idx} className="flex gap-2 items-center">
                       <select value={line.ingredient_id || ""}
-                        onChange={e => updateLine(idx, "ingredient_id", e.target.value)}
+                        onChange={e => {
+                          if (e.target.value === "__new__") {
+                            setQuickIngTarget(idx); setModal("quickIng");
+                          } else { updateLine(idx, "ingredient_id", e.target.value); }
+                        }}
                         className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
                         <option value="">-- Elegir ingrediente --</option>
+                        <option value="__new__" className="text-emerald-700 font-semibold">✚ Crear nuevo ingrediente...</option>
+                        <option disabled>──────────────</option>
                         {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
                       </select>
                       <input type="number" min="0" step="0.001" value={line.qty || ""}
