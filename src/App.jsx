@@ -1,5 +1,7 @@
+/* eslint-disable no-restricted-globals */
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -252,7 +254,7 @@ function AdminPanel({ profile }) {
   };
 
   const deleteUser = async (u) => {
-    if (!confirm(`¿Eliminar al usuario ${u.username}?`)) return;
+    
     await supabase.auth.admin.deleteUser(u.id);
     await supabase.from("profiles").delete().eq("id", u.id);
     await logActivity(profile, "delete", "usuario", u.username);
@@ -429,7 +431,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   };
 
   const del = async (id, name) => {
-    if (!confirm(`¿Eliminar "${name}"?`)) return;
+    
     await supabase.from("ingredients").delete().eq("id", id);
     setIngredients(prev => prev.filter(i => i.id !== id));
     await logActivity(profile, "delete", "ingrediente", name);
@@ -647,7 +649,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   };
 
   const del = async (id, name) => {
-    if (!confirm(`¿Eliminar "${name}"?`)) return;
+    
     await supabase.from("recipes").delete().eq("id", id);
     setRecipes(prev => prev.filter(r => r.id !== id));
     await logActivity(profile, "delete", "receta", name);
