@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-
+import { useState, useEffect, useRef, useCallback } from "react";
 // ─── STORAGE (localStorage para deploy standalone) ───────────────────────────
 const sget = (key) => {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
@@ -8,13 +7,11 @@ const sget = (key) => {
 const sset = (key, val) => {
   try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 };
-
 const KEY_USERS   = "recetapp:users";
 const KEY_SESSION = "recetapp:session";
 const kIng  = (u) => `recetapp:${u}:ingredients`;
 const kRec  = (u) => `recetapp:${u}:recipes`;
 const kBiz  = (u) => `recetapp:${u}:business`;
-
 // ─── DEFAULT DATA ─────────────────────────────────────────────────────────────
 const DEFAULT_INGREDIENTS = [
   { id:1,  name:"Harina 000",     category:"Secos",   unit:"kg",  buyPrice:450,  buyQty:1,    wastePct:0  },
@@ -30,7 +27,6 @@ const DEFAULT_INGREDIENTS = [
   { id:11, name:"Dulce de leche", category:"Dulces",  unit:"kg",  buyPrice:2400, buyQty:1,    wastePct:2  },
   { id:12, name:"Nueces",         category:"Frutas",  unit:"kg",  buyPrice:4500, buyQty:1,    wastePct:10 },
 ];
-
 const DEFAULT_BUSINESS = {
   fixedCosts: [
     { id:1, name:"Alquiler / local",           amount:25000 },
@@ -45,7 +41,6 @@ const DEFAULT_BUSINESS = {
   ivaPct:       21,
   otherVarPct:  2,
 };
-
 const DEFAULT_RECIPES = [
   {
     id:1, name:"Medialunas de manteca", category:"Panadería", portions:24, profitPct:40,
@@ -66,19 +61,16 @@ const DEFAULT_RECIPES = [
     ]
   },
 ];
-
 // ─── CALCULATIONS ─────────────────────────────────────────────────────────────
 function unitCost(ing) {
   const base = ing.buyQty > 0 ? ing.buyPrice / ing.buyQty : 0;
   return ing.wastePct > 0 ? base / (1 - ing.wastePct / 100) : base;
 }
-
 function calcRecipe(recipe, ingredients, business) {
   const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfPerUnit  = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
   const varPct     = ((business.deliveryPct||0) + (business.ivaPct||0) + (business.otherVarPct||0)) / 100;
-
   let mpTotal = 0;
   const lines = recipe.ingredients.map(ri => {
     const ing = ingMap[ri.ingredientId];
@@ -88,7 +80,6 @@ function calcRecipe(recipe, ingredients, business) {
     mpTotal  += sub;
     return { ing, qty: ri.qty, unitCost: uc, subtotal: sub };
   }).filter(Boolean);
-
   const mpPerPortion   = recipe.portions > 0 ? mpTotal / recipe.portions : 0;
   const subtotalDirect = mpPerPortion + cfPerUnit;
   const varCost        = subtotalDirect * varPct;
@@ -98,17 +89,14 @@ function calcRecipe(recipe, ingredients, business) {
   const roundedPrice   = Math.ceil(suggestedPrice / 50) * 50;
   const realProfit     = roundedPrice - totalCost;
   const realProfitPct  = roundedPrice > 0 ? (realProfit / roundedPrice) * 100 : 0;
-
   return { lines, mpTotal, mpPerPortion, cfPerUnit, varCost, varPct,
            totalCost, suggestedPrice, roundedPrice, realProfit, realProfitPct };
 }
-
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
 function exportCSV(recipes, ingredients, business) {
-  // Punto y coma como separador para Excel en español/latinoamérica
   const S = ";";
-  const n = (v) => v.toString().replace(".", ","); // decimales con coma
-  let csv = "sep=;\n"; // indica a Excel el separador
+  const n = (v) => v.toString().replace(".", ",");
+  let csv = "sep=;\n";
   csv += `COSTEO DE RECETAS\n\n`;
   recipes.forEach(r => {
     const c = calcRecipe(r, ingredients, business);
@@ -133,7 +121,52 @@ function exportCSV(recipes, ingredients, business) {
   a.href = url; a.download = "RecetApp_Costeo.csv"; a.click();
   URL.revokeObjectURL(url);
 }
-
+// ─── PARSE CSV/SHEET para importar ingredientes ───────────────────────────────
+function parseIngredientsCSV(text) {
+  const firstLine = text.split(/\r?\n/)[0];
+  const sep = firstLine.includes(";") ? ";" : ",";
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) throw new Error("El archivo debe tener encabezado y al menos una fila de datos.");
+  const headers = lines[0].split(sep).map(h =>
+    h.trim().toLowerCase().replace(/[^a-záéíóúüñ0-9]/gi, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  );
+  const colMap = {
+    name:      ["nombre", "ingrediente", "name"],
+    category:  ["categoria", "category", "rubro", "tipo"],
+    unit:      ["unidad", "unit", "medida"],
+    buyPrice:  ["precio", "price", "costo", "preciocompra", "buyPrice"],
+    buyQty:    ["cantidad", "qty", "cantidadcompra", "bulto"],
+    wastePct:  ["merma", "waste", "mermapct", "wastePct"],
+  };
+  const idx = {};
+  for (const [key, aliases] of Object.entries(colMap)) {
+    for (const alias of aliases) {
+      const i = headers.indexOf(alias);
+      if (i !== -1) { idx[key] = i; break; }
+    }
+  }
+  if (idx.name === undefined) throw new Error("No se encontró la columna 'Nombre' en el archivo.");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(sep).map(c => c.trim().replace(/^"|"$/g, ""));
+    const name = cols[idx.name]?.trim();
+    if (!name) continue;
+    const toNum = (v) => {
+      if (v === undefined || v === "" || v === null) return 0;
+      return parseFloat(v.replace(",", ".")) || 0;
+    };
+    rows.push({
+      name,
+      category: cols[idx.category]?.trim() || "General",
+      unit:     cols[idx.unit]?.trim()     || "kg",
+      buyPrice: toNum(cols[idx.buyPrice]),
+      buyQty:   toNum(cols[idx.buyQty]) || 1,
+      wastePct: toNum(cols[idx.wastePct]),
+    });
+  }
+  if (rows.length === 0) throw new Error("No se encontraron filas válidas en el archivo.");
+  return rows;
+}
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
 function Pill({ children, color = "emerald" }) {
   const map = {
@@ -145,7 +178,6 @@ function Pill({ children, color = "emerald" }) {
   };
   return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${map[color] || map.emerald}`}>{children}</span>;
 }
-
 function StatCard({ label, value, sub, accent = "emerald" }) {
   const map = {
     emerald: "border-l-emerald-500 bg-emerald-50",
@@ -161,13 +193,12 @@ function StatCard({ label, value, sub, accent = "emerald" }) {
     </div>
   );
 }
-
+// ─── MODAL ────────────────────────────────────────────────────────────────────
 function Modal({ title, onClose, children, wide = false }) {
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div
         className={`bg-white rounded-2xl shadow-2xl ${wide ? "max-w-3xl" : "max-w-lg"} w-full max-h-[90vh] overflow-y-auto`}
-        onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <h2 className="font-bold text-gray-800 text-lg">{title}</h2>
@@ -178,7 +209,6 @@ function Modal({ title, onClose, children, wide = false }) {
     </div>
   );
 }
-
 function Field({ label, children }) {
   return (
     <div>
@@ -187,7 +217,6 @@ function Field({ label, children }) {
     </div>
   );
 }
-
 function TextInput({ value, onChange, type = "text", placeholder, suffix, step, min, max }) {
   return (
     <div className="relative">
@@ -200,7 +229,6 @@ function TextInput({ value, onChange, type = "text", placeholder, suffix, step, 
     </div>
   );
 }
-
 function Btn({ children, onClick, variant = "primary", size = "md", disabled = false, className = "" }) {
   const v = {
     primary:   "bg-emerald-600 hover:bg-emerald-700 text-white",
@@ -218,13 +246,11 @@ function Btn({ children, onClick, variant = "primary", size = "md", disabled = f
     </button>
   );
 }
-
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ username: "", password: "", confirm: "" });
   const [error, setError] = useState("");
-
   const handle = () => {
     setError("");
     const users = sget(KEY_USERS) || {};
@@ -244,9 +270,7 @@ function LoginScreen({ onLogin }) {
     sset(KEY_SESSION, { username: form.username });
     onLogin(form.username);
   };
-
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-
   return (
     <div className="min-h-screen flex items-center justify-center p-4"
          style={{ background: "linear-gradient(135deg,#064e3b 0%,#065f46 50%,#047857 100%)" }}>
@@ -288,58 +312,152 @@ function LoginScreen({ onLogin }) {
     </div>
   );
 }
-
-// ─── CSV TEMPLATE ─────────────────────────────────────────────────────────────
-function downloadTemplate() {
-  const csv = "sep=;\nNombre;Categoria;Unidad;Precio compra;Cantidad compra;% Merma\n" +
-    "Harina 000;Secos;kg;450;1;0\n" +
-    "Manteca;Lacteos;kg;2100;1;3\n" +
-    "Huevos;Frescos;u;180;12;2\n";
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "plantilla_ingredientes.csv"; a.click();
-  URL.revokeObjectURL(url);
+// ─── IMPORT INGREDIENTS MODAL ─────────────────────────────────────────────────
+function ImportIngredientsModal({ onClose, onImport }) {
+  const [step, setStep]         = useState("upload");
+  const [preview, setPreview]   = useState([]);
+  const [error, setError]       = useState("");
+  const [fileName, setFileName] = useState("");
+  const fileRef = useRef();
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const rows = parseIngredientsCSV(ev.target.result);
+        setPreview(rows);
+        setStep("preview");
+      } catch (err) {
+        setError(err.message);
+      }
+    };
+    reader.readAsText(file, "UTF-8");
+  };
+  const handleImport = () => {
+    onImport(preview);
+    setStep("done");
+  };
+  return (
+    <Modal title="Importar ingredientes desde CSV / Excel" onClose={onClose} wide>
+      {step === "upload" && (
+        <div className="space-y-5">
+          <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 text-sm text-sky-800 space-y-2">
+            <p className="font-semibold">📋 Cómo preparar el archivo</p>
+            <p>Exportá tu planilla como <strong>CSV</strong> (desde Excel: Archivo → Guardar como → CSV UTF-8).</p>
+            <p>El archivo debe tener una fila de <strong>encabezado</strong> con estas columnas (en cualquier orden):</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs mt-2 border border-sky-200 rounded-lg overflow-hidden">
+                <thead className="bg-sky-100">
+                  <tr>
+                    {["Nombre *","Categoría","Unidad","Precio","Cantidad","Merma %"].map(h => (
+                      <th key={h} className="px-3 py-1.5 text-left font-semibold">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="bg-white">
+                    {["Harina 000","Secos","kg","450","1","0"].map((v, i) => (
+                      <td key={i} className="px-3 py-1.5 border-t border-sky-100">{v}</td>
+                    ))}
+                  </tr>
+                  <tr className="bg-sky-50/40">
+                    {["Manteca","Lácteos","kg","2100","1","3"].map((v, i) => (
+                      <td key={i} className="px-3 py-1.5 border-t border-sky-100">{v}</td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-sky-600 mt-1">* Columna obligatoria. Las demás tienen valores por defecto si faltan.</p>
+            <p className="text-xs text-sky-600">Los ingredientes existentes (mismo nombre) se <strong>actualizan</strong>. Los nuevos se <strong>agregan</strong>.</p>
+          </div>
+          <button
+            onClick={() => {
+              const content = "sep=;\nNombre;Categoría;Unidad;Precio;Cantidad;Merma\nHarina 000;Secos;kg;450;1;0\nManteca;Lácteos;kg;2100;1;3\n";
+              const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a"); a.href = url; a.download = "plantilla_ingredientes.csv"; a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="text-sm text-emerald-600 hover:text-emerald-700 font-medium underline underline-offset-2"
+          >
+            ⬇️ Descargar plantilla CSV
+          </button>
+          <div
+            onClick={() => fileRef.current.click()}
+            className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all"
+          >
+            <div className="text-4xl mb-2">📂</div>
+            <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
+            <p className="text-xs text-gray-400 mt-1">CSV (separado por comas o punto y coma)</p>
+            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+          </div>
+          {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
+          <div className="flex justify-end">
+            <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+          </div>
+        </div>
+      )}
+      {step === "preview" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg">
+            <span>📄</span><span className="font-medium">{fileName}</span>
+            <span className="ml-auto text-emerald-600 font-semibold">{preview.length} ingredientes encontrados</span>
+          </div>
+          <div className="overflow-x-auto max-h-72 rounded-xl border border-gray-100">
+            <table className="w-full text-xs min-w-[500px]">
+              <thead className="sticky top-0 bg-gray-50 border-b border-gray-100">
+                <tr>
+                  {["Nombre","Categoría","Unidad","Precio","Cantidad","Merma %"].map(h => (
+                    <th key={h} className="text-left px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.map((row, i) => (
+                  <tr key={i} className={`border-b border-gray-50 ${i % 2 === 0 ? "bg-white" : "bg-gray-50/40"}`}>
+                    <td className="px-3 py-2 font-medium text-gray-800">{row.name}</td>
+                    <td className="px-3 py-2 text-gray-500">{row.category}</td>
+                    <td className="px-3 py-2 text-gray-500">{row.unit}</td>
+                    <td className="px-3 py-2 text-gray-700">${row.buyPrice.toLocaleString("es-AR")}</td>
+                    <td className="px-3 py-2 text-gray-500">{row.buyQty}</td>
+                    <td className="px-3 py-2">{row.wastePct > 0 ? <Pill color="rose">{row.wastePct}%</Pill> : <span className="text-gray-300">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-gray-500 bg-amber-50 border border-amber-100 px-3 py-2 rounded-lg">
+            ⚠️ Los ingredientes con el mismo nombre serán <strong>actualizados</strong>. Los nuevos se <strong>agregarán</strong> a tu lista.
+          </p>
+          <div className="flex gap-3 justify-end">
+            <Btn variant="secondary" onClick={() => { setStep("upload"); setPreview([]); setFileName(""); }}>
+              ← Volver
+            </Btn>
+            <Btn onClick={handleImport}>
+              ✓ Importar {preview.length} ingredientes
+            </Btn>
+          </div>
+        </div>
+      )}
+      {step === "done" && (
+        <div className="text-center py-8 space-y-3">
+          <div className="text-5xl">✅</div>
+          <p className="text-lg font-bold text-gray-800">¡Importación exitosa!</p>
+          <p className="text-sm text-gray-500">Se procesaron {preview.length} ingredientes.</p>
+          <Btn onClick={onClose} className="mt-2">Cerrar</Btn>
+        </div>
+      )}
+    </Modal>
+  );
 }
-
-// ─── INGREDIENTS ──────────────────────────────────────────────────────────────
-function IngredientsTab({ ingredients, setIngredients, user }) {
-  const [modal, setModal]           = useState(null);
-  const [search, setSearch]         = useState("");
-  const [catFilter, setCatFilter]   = useState("Todas");
-  const [form, setForm]             = useState({});
-  const [importResult, setImportResult] = useState(null);
-
-  const categories = ["Todas", ...Array.from(new Set(ingredients.map(i => i.category))).sort()];
-
-  const filtered = ingredients
-    .filter(i => {
-      const matchSearch = i.name.toLowerCase().includes(search.toLowerCase()) ||
-                          i.category.toLowerCase().includes(search.toLowerCase());
-      const matchCat = catFilter === "Todas" || i.category === catFilter;
-      return matchSearch && matchCat;
-    })
-    .sort((a, b) => a.name.localeCompare(b.name, "es"));
-
-  const openAdd  = () => { setForm({ name:"", category:"", unit:"kg", buyPrice:"", buyQty:"1", wastePct:"0" }); setModal("form"); };
-  const openEdit = (ing) => { setForm({ ...ing, buyPrice: ing.buyPrice+"", buyQty: ing.buyQty+"", wastePct: ing.wastePct+"" }); setModal("form"); };
-
-  const saveIng = () => {
-    const ing = { ...form, buyPrice: +form.buyPrice, buyQty: +form.buyQty, wastePct: +form.wastePct };
-    let updated;
-    if (!ing.id) { ing.id = Date.now(); updated = [...ingredients, ing]; }
-    else         { updated = ingredients.map(i => i.id === ing.id ? ing : i); }
-    setIngredients(updated); sset(kIng(user), updated); setModal(null);
-  };
-
-  const del = id => {
-    const updated = ingredients.filter(i => i.id !== id);
-    setIngredients(updated); sset(kIng(user), updated);
-  };
-
+// ─── INLINE NEW INGREDIENT (desde RecipesTab) ─────────────────────────────────
+function QuickAddIngredientModal({ onClose, onSave }) {
+  const [form, setForm] = useState({ name:"", category:"", unit:"kg", buyPrice:"", buyQty:"1", wastePct:"0" });
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"emerald", Aceites:"violet", Dulces:"rose", Frutas:"emerald" };
-
   const previewCost = () => {
     const qty = +form.buyQty || 0;
     const price = +form.buyPrice || 0;
@@ -348,15 +466,101 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
     const base = price / qty;
     return waste > 0 ? (base / (1 - waste / 100)).toFixed(4) : base.toFixed(4);
   };
-
+  const save = () => {
+    if (!form.name.trim()) return;
+    const ing = { ...form, id: Date.now(), buyPrice: +form.buyPrice, buyQty: +form.buyQty, wastePct: +form.wastePct };
+    onSave(ing);
+  };
+  return (
+    <Modal title="Agregar nuevo ingrediente" onClose={onClose}>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="col-span-2">
+          <Field label="Nombre del ingrediente">
+            <TextInput value={form.name} onChange={f("name")} placeholder="Ej: Harina 000" />
+          </Field>
+        </div>
+        <Field label="Categoría">
+          <TextInput value={form.category} onChange={f("category")} placeholder="Ej: Secos" />
+        </Field>
+        <Field label="Unidad">
+          <TextInput value={form.unit} onChange={f("unit")} placeholder="kg, lt, u" />
+        </Field>
+        <Field label="Precio de compra ($)">
+          <TextInput value={form.buyPrice} onChange={f("buyPrice")} type="number" min="0" step="0.01" />
+        </Field>
+        <Field label="Cantidad que comprás">
+          <TextInput value={form.buyQty} onChange={f("buyQty")} type="number" min="0.001" step="0.001" />
+        </Field>
+        <Field label="% Merma">
+          <TextInput value={form.wastePct} onChange={f("wastePct")} type="number" min="0" max="100" step="0.1" suffix="%" />
+        </Field>
+        <div className="bg-emerald-50 rounded-xl p-4 flex flex-col justify-center">
+          <p className="text-xs text-emerald-600 font-medium mb-1">Costo neto x unidad</p>
+          <p className="text-2xl font-bold text-emerald-700">${previewCost()}</p>
+        </div>
+      </div>
+      <div className="flex gap-3 mt-5 justify-end">
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.name.trim()}>Guardar ingrediente</Btn>
+      </div>
+    </Modal>
+  );
+}
+// ─── INGREDIENTS ──────────────────────────────────────────────────────────────
+function IngredientsTab({ ingredients, setIngredients, user }) {
+  const [modal, setModal] = useState(null);
+  const [search, setSearch] = useState("");
+  const [form, setForm] = useState({});
+  const filtered = ingredients.filter(i =>
+    i.name.toLowerCase().includes(search.toLowerCase()) ||
+    i.category.toLowerCase().includes(search.toLowerCase())
+  );
+  const openAdd  = () => { setForm({ name:"", category:"", unit:"kg", buyPrice:"", buyQty:"1", wastePct:"0" }); setModal("form"); };
+  const openEdit = (ing) => { setForm({ ...ing, buyPrice: ing.buyPrice+"", buyQty: ing.buyQty+"", wastePct: ing.wastePct+"" }); setModal("form"); };
+  const saveIng = () => {
+    const ing = { ...form, buyPrice: +form.buyPrice, buyQty: +form.buyQty, wastePct: +form.wastePct };
+    let updated;
+    if (!ing.id) { ing.id = Date.now(); updated = [...ingredients, ing]; }
+    else         { updated = ingredients.map(i => i.id === ing.id ? ing : i); }
+    setIngredients(updated); sset(kIng(user), updated); setModal(null);
+  };
+  const del = id => {
+    const updated = ingredients.filter(i => i.id !== id);
+    setIngredients(updated); sset(kIng(user), updated);
+  };
+  const handleImport = (rows) => {
+    const existing = [...ingredients];
+    rows.forEach(row => {
+      const idx = existing.findIndex(i => i.name.toLowerCase().trim() === row.name.toLowerCase().trim());
+      if (idx !== -1) {
+        existing[idx] = { ...existing[idx], ...row };
+      } else {
+        existing.push({ ...row, id: Date.now() + Math.random() });
+      }
+    });
+    setIngredients(existing);
+    sset(kIng(user), existing);
+  };
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"emerald", Aceites:"violet", Dulces:"rose", Frutas:"emerald" };
+  const previewCost = () => {
+    const qty = +form.buyQty || 0;
+    const price = +form.buyPrice || 0;
+    const waste = +form.wastePct || 0;
+    if (qty <= 0) return "0.0000";
+    const base = price / qty;
+    return waste > 0 ? (base / (1 - waste / 100)).toFixed(4) : base.toFixed(4);
+  };
   return (
     <div>
       <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ingrediente o categoría..."
                className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
-        <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
+        <div className="flex gap-2">
+          <Btn variant="secondary" onClick={() => setModal("import")}>⬆️ Importar CSV</Btn>
+          <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
+        </div>
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
         <table className="w-full text-sm min-w-[640px]">
           <thead>
@@ -393,8 +597,7 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
           </div>
         )}
       </div>
-
-      {modal && (
+      {modal === "form" && (
         <Modal title={form.id ? "Editar ingrediente" : "Nuevo ingrediente"} onClose={() => setModal(null)}>
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
@@ -428,10 +631,12 @@ function IngredientsTab({ ingredients, setIngredients, user }) {
           </div>
         </Modal>
       )}
+      {modal === "import" && (
+        <ImportIngredientsModal onClose={() => setModal(null)} onImport={(rows) => { handleImport(rows); }} />
+      )}
     </div>
   );
 }
-
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, user }) {
   const update = (key, val) => {
@@ -450,10 +655,8 @@ function BusinessTab({ business, setBusiness, user }) {
     const upd = { ...business, fixedCosts: business.fixedCosts.filter(c => c.id !== id) };
     setBusiness(upd); sset(kBiz(user), upd);
   };
-
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -461,7 +664,6 @@ function BusinessTab({ business, setBusiness, user }) {
         <StatCard label="Unidades estimadas/mes"  value={business.monthlyUnits} accent="sky" />
         <StatCard label="Costo fijo x unidad"      value={`$${cfUnit.toFixed(2)}`} sub="Aplicado a cada receta" accent="emerald" />
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">🏢 Costos fijos mensuales</h3>
         <div className="space-y-2">
@@ -480,7 +682,6 @@ function BusinessTab({ business, setBusiness, user }) {
         </div>
         <button onClick={addCost} className="mt-3 text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">📈 Producción y costos variables</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -501,48 +702,88 @@ function BusinessTab({ business, setBusiness, user }) {
     </div>
   );
 }
-
 // ─── RECIPES ─────────────────────────────────────────────────────────────────
-function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
-  const [selected, setSelected] = useState(recipes[0]?.id || null);
-  const [modal, setModal]       = useState(null);
-  const [form, setForm]         = useState({});
+function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, user }) {
+  const [selected, setSelected]             = useState(recipes[0]?.id ?? null);
+  const [modal, setModal]                   = useState(null);
+  const [form, setForm]                     = useState({});
+  const [quickIngTarget, setQuickIngTarget] = useState(null);
 
-  const openAdd  = () => { setForm({ name:"", category:"", portions:"4", profitPct:"40", ingredients:[] }); setModal("form"); };
-  const openEdit = r => { setForm({ ...r, portions: r.portions+"", profitPct: r.profitPct+"" }); setModal("form"); };
+  // ─── FIX: mantener selected sincronizado con la lista de recetas ───────────
+  useEffect(() => {
+    if (selected === null && recipes.length > 0) {
+      // No había selección pero ahora hay recetas → seleccionar la primera
+      setSelected(recipes[0].id);
+    } else if (selected !== null && !recipes.find(r => r.id === selected)) {
+      // La receta seleccionada ya no existe → ir a la primera disponible
+      setSelected(recipes[0]?.id ?? null);
+    }
+  }, [recipes, selected]);
+  // ──────────────────────────────────────────────────────────────────────────
 
+  const openAdd  = () => {
+    setForm({ name:"", category:"", portions:"4", profitPct:"40", ingredients:[] });
+    setModal("form");
+  };
+  const openEdit = r => {
+    setForm({ ...r, portions: r.portions+"", profitPct: r.profitPct+"" });
+    setModal("form");
+  };
   const saveRecipe = () => {
     const r = { ...form, portions: +form.portions, profitPct: +form.profitPct };
+    r.ingredients = (r.ingredients || [])
+      .filter(l => l.ingredientId !== "" && l.ingredientId !== undefined && l.qty !== "" && +l.qty > 0)
+      .map(l => ({ ingredientId: +l.ingredientId, qty: +l.qty }));
     let updated;
     if (!r.id) { r.id = Date.now(); updated = [...recipes, r]; }
     else       { updated = recipes.map(x => x.id === r.id ? r : x); }
-    setRecipes(updated); sset(kRec(user), updated); setModal(null); setSelected(r.id);
+    setRecipes(updated);
+    sset(kRec(user), updated);
+    setModal(null);
+    setSelected(r.id);
   };
-
   const del = id => {
     const updated = recipes.filter(r => r.id !== id);
     setRecipes(updated); sset(kRec(user), updated);
-    if (selected === id) setSelected(updated[0]?.id || null);
+    if (selected === id) setSelected(updated[0]?.id ?? null);
   };
-
-  const addLine    = () => setForm(p => ({ ...p, ingredients: [...p.ingredients, { ingredientId: "", qty: "" }] }));
+  const addLine    = () => setForm(p => ({ ...p, ingredients: [...(p.ingredients || []), { ingredientId: "", qty: "" }] }));
   const updateLine = (idx, k, v) => setForm(p => {
-    const ings = [...p.ingredients]; ings[idx] = { ...ings[idx], [k]: k === "qty" ? v : +v }; return { ...p, ingredients: ings };
+    const ings = [...(p.ingredients || [])];
+    ings[idx] = { ...ings[idx], [k]: v };
+    return { ...p, ingredients: ings };
   });
-  const removeLine = idx => setForm(p => ({ ...p, ingredients: p.ingredients.filter((_, i) => i !== idx) }));
-
+  const removeLine = idx => setForm(p => ({ ...p, ingredients: (p.ingredients || []).filter((_, i) => i !== idx) }));
+  const handleQuickIngSave = (newIng) => {
+    const updatedIngs = [...ingredients, newIng];
+    setIngredients(updatedIngs);
+    sset(kIng(user), updatedIngs);
+    if (quickIngTarget !== null) {
+      setForm(p => {
+        const ings = [...(p.ingredients || [])];
+        ings[quickIngTarget] = { ...ings[quickIngTarget], ingredientId: String(newIng.id) };
+        return { ...p, ingredients: ings };
+      });
+    }
+    setModal("form");
+    setQuickIngTarget(null);
+  };
+  const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
   const recipe = recipes.find(r => r.id === selected);
   const calc   = recipe ? calcRecipe(recipe, ingredients, business) : null;
-  const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
-
   const liveCalc = (() => {
     if (!form.ingredients?.length || !form.portions) return null;
-    const preview = { ...form, portions: +form.portions, profitPct: +form.profitPct,
-      ingredients: form.ingredients.filter(l => l.ingredientId && l.qty).map(l => ({ ingredientId: +l.ingredientId, qty: +l.qty })) };
+    const preview = {
+      ...form,
+      portions: +form.portions,
+      profitPct: +form.profitPct,
+      ingredients: (form.ingredients || [])
+        .filter(l => l.ingredientId !== "" && l.qty !== "" && +l.qty > 0)
+        .map(l => ({ ingredientId: +l.ingredientId, qty: +l.qty })),
+    };
     if (!preview.ingredients.length) return null;
-    return calcRecipe(preview, ingredients, business);
+    try { return calcRecipe(preview, ingredients, business); } catch { return null; }
   })();
-
   return (
     <div className="flex gap-5">
       {/* Sidebar list */}
@@ -566,7 +807,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
           <div className="text-center py-8 text-gray-400 text-sm"><div className="text-3xl mb-2">🍽️</div>Sin recetas aún</div>
         )}
       </div>
-
       {/* Detail panel */}
       <div className="flex-1 min-w-0">
         {recipe && calc ? (
@@ -581,14 +821,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
                 <button onClick={() => del(recipe.id)}   className="bg-white/20 hover:bg-rose-500  text-white text-sm px-3 py-1.5 rounded-lg transition-colors">🗑</button>
               </div>
             </div>
-
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
-              <StatCard label="Costo x porción"  value={`$${calc.totalCost.toFixed(2)}`}                          accent="rose" />
-              <StatCard label="Precio sugerido"  value={`$${calc.suggestedPrice.toFixed(2)}`}                     accent="amber" />
+              <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`}                          accent="rose" />
+              <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`}                     accent="amber" />
               <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="emerald" />
-              <StatCard label="Ganancia real"     value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />
+              <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />
             </div>
-
             <div className="px-5 pb-3">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Ingredientes</h3>
               <div className="overflow-x-auto">
@@ -614,7 +852,6 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
                 </table>
               </div>
             </div>
-
             <div className="mx-5 mb-5 rounded-xl overflow-hidden text-sm border border-gray-100">
               {[
                 ["Costo MP total",                                `$${calc.mpTotal.toFixed(2)}`,       "bg-white"],
@@ -642,8 +879,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
           </div>
         )}
       </div>
-
-      {/* Form modal */}
+      {/* ── Modal form receta ── */}
       {modal === "form" && (
         <Modal title={form.id ? "Editar receta" : "Nueva receta"} onClose={() => setModal(null)} wide>
           <div className="space-y-5">
@@ -665,26 +901,41 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
                 </Field>
               </div>
             </div>
-
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-sm font-semibold text-gray-700">Ingredientes</h4>
-                <button onClick={addLine} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar</button>
+                <button onClick={addLine} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
               </div>
               <div className="space-y-2">
                 {(form.ingredients || []).map((line, idx) => {
-                  const ing = ingMap[line.ingredientId];
-                  const sub = ing && line.qty ? (unitCost(ing) * +line.qty).toFixed(2) : null;
+                  const ingId = line.ingredientId !== "" ? +line.ingredientId : null;
+                  const ing   = ingId ? ingMap[ingId] : null;
+                  const sub   = ing && line.qty ? (unitCost(ing) * +line.qty).toFixed(2) : null;
                   return (
                     <div key={idx} className="flex gap-2 items-center">
-                      <select value={line.ingredientId || ""} onChange={e => updateLine(idx, "ingredientId", e.target.value)}
-                              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
+                      <select
+                        value={line.ingredientId || ""}
+                        onChange={e => {
+                          if (e.target.value === "__new__") {
+                            setQuickIngTarget(idx);
+                            setModal("quickIng");
+                          } else {
+                            updateLine(idx, "ingredientId", e.target.value);
+                          }
+                        }}
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                      >
                         <option value="">-- Elegir ingrediente --</option>
+                        <option value="__new__" className="text-emerald-700 font-semibold">✚ Crear nuevo ingrediente…</option>
+                        <option disabled>──────────────</option>
                         {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
                       </select>
-                      <input type="number" min="0" step="0.001" value={line.qty || ""}
-                             onChange={e => updateLine(idx, "qty", e.target.value)}
-                             placeholder="Cant." className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                      <input
+                        type="number" min="0" step="0.001" value={line.qty || ""}
+                        onChange={e => updateLine(idx, "qty", e.target.value)}
+                        placeholder="Cant."
+                        className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                      />
                       {sub && <span className="text-xs font-semibold text-emerald-600 w-16 text-right">${sub}</span>}
                       <button onClick={() => removeLine(idx)} className="text-gray-300 hover:text-rose-400 text-lg transition-colors">×</button>
                     </div>
@@ -692,12 +943,11 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
                 })}
                 {!(form.ingredients?.length) && (
                   <p className="text-sm text-gray-400 text-center py-4 border border-dashed border-gray-200 rounded-xl">
-                    Hacé clic en "+ Agregar" para sumar ingredientes
+                    Hacé clic en "+ Agregar línea" para sumar ingredientes
                   </p>
                 )}
               </div>
             </div>
-
             {liveCalc && (
               <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
                 <p className="text-xs text-emerald-600 font-semibold uppercase tracking-wide mb-3">Vista previa en tiempo real</p>
@@ -715,24 +965,28 @@ function RecipesTab({ recipes, setRecipes, ingredients, business, user }) {
           </div>
         </Modal>
       )}
+      {/* ── Modal quick-add ingrediente (desde recetas) ── */}
+      {modal === "quickIng" && (
+        <QuickAddIngredientModal
+          onClose={() => { setModal("form"); setQuickIngTarget(null); }}
+          onSave={handleQuickIngSave}
+        />
+      )}
     </div>
   );
 }
-
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard({ recipes, ingredients, business }) {
   const totalFixed = business.fixedCosts.reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthlyUnits > 0 ? totalFixed / business.monthlyUnits : 0;
-
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard label="Ingredientes" value={ingredients.length} accent="sky" />
-        <StatCard label="Recetas activas" value={recipes.length} accent="emerald" />
+        <StatCard label="Ingredientes"    value={ingredients.length} accent="sky" />
+        <StatCard label="Recetas activas" value={recipes.length}     accent="emerald" />
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
-        <StatCard label="CF x unidad" value={`$${cfUnit.toFixed(2)}`} accent="amber" />
+        <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
-
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h3 className="font-semibold text-gray-700">Resumen de recetas</h3>
@@ -774,16 +1028,14 @@ function Dashboard({ recipes, ingredients, business }) {
     </div>
   );
 }
-
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser]             = useState(null);
-  const [loading, setLoading]       = useState(true);
-  const [tab, setTab]               = useState("dashboard");
+  const [user, setUser]               = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [tab, setTab]                 = useState("dashboard");
   const [ingredients, setIngredients] = useState([]);
-  const [recipes, setRecipes]       = useState([]);
-  const [business, setBusiness]     = useState(DEFAULT_BUSINESS);
-
+  const [recipes, setRecipes]         = useState([]);
+  const [business, setBusiness]       = useState(DEFAULT_BUSINESS);
   useEffect(() => {
     const session = sget(KEY_SESSION);
     if (session?.username) {
@@ -792,35 +1044,28 @@ export default function App() {
     }
     setLoading(false);
   }, []);
-
   const loadData = (username) => {
     setIngredients(sget(kIng(username)) || DEFAULT_INGREDIENTS);
     setRecipes    (sget(kRec(username)) || DEFAULT_RECIPES);
     setBusiness   (sget(kBiz(username)) || DEFAULT_BUSINESS);
   };
-
   const handleLogin = (username) => { loadData(username); setUser(username); };
-
   const logout = () => {
     sset(KEY_SESSION, null);
     setUser(null); setIngredients([]); setRecipes([]); setBusiness(DEFAULT_BUSINESS); setTab("dashboard");
   };
-
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center bg-emerald-50">
       <div className="text-emerald-600 text-xl font-medium">🍽️ Cargando...</div>
     </div>
   );
-
   if (!user) return <LoginScreen onLogin={handleLogin} />;
-
   const TABS = [
-    { id:"dashboard",   label:"📊 Resumen"      },
-    { id:"recipes",     label:"🍽️ Recetas"      },
-    { id:"ingredients", label:"📦 Ingredientes"  },
-    { id:"business",    label:"⚙️ Costos"        },
+    { id:"dashboard",   label:"📊 Resumen"     },
+    { id:"recipes",     label:"🍽️ Recetas"     },
+    { id:"ingredients", label:"📦 Ingredientes" },
+    { id:"business",    label:"⚙️ Costos"       },
   ];
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-40">
@@ -857,12 +1102,11 @@ export default function App() {
           ))}
         </div>
       </header>
-
       <main className="max-w-7xl mx-auto px-4 py-5">
-        {tab === "dashboard"    && <Dashboard      recipes={recipes} ingredients={ingredients} business={business} />}
-        {tab === "recipes"      && <RecipesTab     recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} business={business} user={user} />}
-        {tab === "ingredients"  && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} user={user} />}
-        {tab === "business"     && <BusinessTab    business={business} setBusiness={setBusiness} user={user} />}
+        {tab === "dashboard"   && <Dashboard      recipes={recipes} ingredients={ingredients} business={business} />}
+        {tab === "recipes"     && <RecipesTab     recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} user={user} />}
+        {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} user={user} />}
+        {tab === "business"    && <BusinessTab    business={business} setBusiness={setBusiness} user={user} />}
       </main>
     </div>
   );
