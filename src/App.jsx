@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 // ─── STORAGE (localStorage para deploy standalone) ───────────────────────────
 const sget = (key) => {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
