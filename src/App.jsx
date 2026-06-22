@@ -256,7 +256,7 @@ function AdminPanel({ profile }) {
   const [logs, setLogs]       = useState([]);
   const [modal, setModal]     = useState(null); // null | "newUser" | "editUser"
   const [selected, setSelected] = useState(null);
-  const [form, setForm]       = useState({ email: "", username: "", password: "", role: "viewer", phone: "" });
+  const [form, setForm]       = useState({ email: "", username: "", password: "", role: "viewer", phone: "", permissions: { dashboard: true, recipes: true, ingredients: true, business: true } });
   const [msg, setMsg]         = useState("");
   const [tab, setTab]         = useState("users"); // users | logs
 
@@ -286,6 +286,7 @@ function AdminPanel({ profile }) {
       username: form.username,
       role: form.role,
       phone: form.phone || null,
+      permissions: form.role === "viewer_partial" ? form.permissions : { dashboard:true, recipes:true, ingredients:true, business:true },
     });
     await logActivity(profile, "create", "usuario", form.username);
     setMsg("✅ Usuario creado correctamente.");
@@ -295,7 +296,7 @@ function AdminPanel({ profile }) {
 
   const updateUser = async () => {
     setMsg("");
-    const updates = { role: form.role, username: form.username, phone: form.phone || null };
+    const updates = { role: form.role, username: form.username, phone: form.phone || null, permissions: form.role === "viewer_partial" ? form.permissions : { dashboard:true, recipes:true, ingredients:true, business:true } };
     await supabase.from("profiles").update(updates).eq("id", selected.id);
     if (form.password) {
       await supabase.auth.admin.updateUserById(selected.id, { password: form.password });
@@ -316,12 +317,12 @@ function AdminPanel({ profile }) {
 
   const openEdit = (u) => {
     setSelected(u);
-    setForm({ email: "", username: u.username, password: "", role: u.role, phone: u.phone || "" });
+    setForm({ email: "", username: u.username, password: "", role: u.role, phone: u.phone || "", permissions: u.permissions || { dashboard:true, recipes:true, ingredients:true, business:true } });
     setModal("editUser");
   };
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky" };
-  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
+  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet" };
+  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial" };
 
   return (
     <div className="space-y-5">
@@ -338,7 +339,7 @@ function AdminPanel({ profile }) {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h3 className="font-semibold text-gray-700">Usuarios registrados</h3>
-            <Btn onClick={() => { setForm({ email:"", username:"", password:"", role:"viewer", phone:"" }); setMsg(""); setModal("newUser"); }}>
+            <Btn onClick={() => { setForm({ email:"", username:"", password:"", role:"viewer", phone:"", permissions:{ dashboard:true, recipes:true, ingredients:true, business:true } }); setMsg(""); setModal("newUser"); }}>
               + Nuevo usuario
             </Btn>
           </div>
@@ -428,11 +429,36 @@ function AdminPanel({ profile }) {
             <Field label="Rol">
               <select value={form.role} onChange={e => setForm(p=>({...p, role: e.target.value}))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
-                <option value="viewer">Solo lectura — puede ver recetas y costos</option>
+                <option value="viewer">Solo lectura — ve todas las secciones</option>
+                <option value="viewer_partial">Vista parcial — el admin elige qué secciones ve</option>
                 <option value="editor">Editor — puede agregar y editar todo</option>
                 <option value="admin">Admin — acceso total + gestión de usuarios</option>
               </select>
             </Field>
+            {form.role === "viewer_partial" && (
+              <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 space-y-2">
+                <p className="text-xs font-semibold text-violet-700 mb-3">Secciones visibles para este usuario:</p>
+                {[
+                  ["dashboard",    "📊 Resumen"],
+                  ["recipes",      "🍽️ Recetas"],
+                  ["ingredients",  "📦 Ingredientes"],
+                  ["business",     "⚙️ Costos"],
+                ].map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.permissions?.[key] ?? true}
+                      onChange={e => setForm(p => ({
+                        ...p,
+                        permissions: { ...(p.permissions || {}), [key]: e.target.checked }
+                      }))}
+                      className="w-4 h-4 rounded accent-violet-600"
+                    />
+                    <span className="text-sm text-gray-700">{label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
             {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
             <div className="flex gap-3 justify-end">
               <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
@@ -603,7 +629,7 @@ function QuickAddIngredientModal({ onClose, onSave }) {
 }
 
 function IngredientsTab({ ingredients, setIngredients, profile }) {
-  const canEdit    = profile?.role !== "viewer";
+  const canEdit    = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
   const [modal, setModal]   = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm]     = useState({});
@@ -749,7 +775,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, profile }) {
-  const canEdit = profile?.role !== "viewer";
+  const canEdit = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
 
   const save = async (updated) => {
     setBusiness(updated);
@@ -824,7 +850,7 @@ function BusinessTab({ business, setBusiness, profile }) {
 
 // ─── RECIPES ──────────────────────────────────────────────────────────────────
 function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile }) {
-  const canEdit = profile?.role !== "viewer";
+  const canEdit = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
   const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
   const [form, setForm]         = useState({});
@@ -1231,14 +1257,19 @@ export default function App() {
   );
   if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky" };
-  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
+  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet" };
+  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial" };
 
+  const perms = profile?.permissions || { dashboard:true, recipes:true, ingredients:true, business:true };
+  const canSeeTab = (id) => {
+    if (profile?.role === "viewer_partial") return perms[id] === true;
+    return true;
+  };
   const TABS = [
-    { id:"dashboard",   label:"📊 Resumen",      show: true },
-    { id:"recipes",     label:"🍽️ Recetas",      show: true },
-    { id:"ingredients", label:"📦 Ingredientes",  show: true },
-    { id:"business",    label:"⚙️ Costos",        show: true },
+    { id:"dashboard",   label:"📊 Resumen",      show: canSeeTab("dashboard") },
+    { id:"recipes",     label:"🍽️ Recetas",      show: canSeeTab("recipes") },
+    { id:"ingredients", label:"📦 Ingredientes",  show: canSeeTab("ingredients") },
+    { id:"business",    label:"⚙️ Costos",        show: canSeeTab("business") },
     { id:"admin",       label:"👥 Usuarios",      show: profile?.role === "admin" },
   ].filter(t => t.show);
 
