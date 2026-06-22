@@ -754,20 +754,30 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
       )}
       {modal === "import" && (
         <ImportCSVModal onClose={() => setModal(null)} onImport={async (rows) => {
-          const existing = [...ingredients];
-          for (const row of rows) {
-            const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
-            if (idx !== -1) {
-              const { data } = await supabase.from("ingredients").update({...row, updated_by: profile.id}).eq("id", existing[idx].id).select().single();
-              if (data) existing[idx] = data;
-            } else {
-              const { data } = await supabase.from("ingredients").insert({...row, created_by: profile.id, updated_by: profile.id}).select().single();
-              if (data) existing.push(data);
-            }
-          }
-          setIngredients(existing);
-          await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
-        }} />
+  const existing = [...ingredients];
+  for (const row of rows) {
+    const cleanRow = {
+      name: row.name,
+      category: row.category,
+      unit: row.unit,
+      buy_price: row.buy_price,
+      buy_qty: row.buy_qty,
+      waste_pct: row.waste_pct,
+    };
+    const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
+    if (idx !== -1) {
+      const { data, error } = await supabase.from("ingredients").update(cleanRow).eq("id", existing[idx].id).select().single();
+      if (error) console.error("Update error:", error);
+      else if (data) existing[idx] = data;
+    } else {
+      const { data, error } = await supabase.from("ingredients").insert(cleanRow).select().single();
+      if (error) console.error("Insert error:", error);
+      else if (data) existing.push(data);
+    }
+  }
+  setIngredients(existing);
+  await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
+}}
       )}
     </div>
   );
