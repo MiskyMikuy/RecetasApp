@@ -102,6 +102,14 @@ async function logActivity(profile, action, entity, detail = "") {
 }
 
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
+function downloadCSV(content, filename) {
+  const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function exportCSV(recipes, ingredients, business) {
   const S = ";";
   const n = (v) => v.toString().replace(".", ",");
@@ -121,11 +129,41 @@ function exportCSV(recipes, ingredients, business) {
     csv += `PRECIO REDONDEADO${S}${S}${S}${S}${n(c.roundedPrice.toFixed(2))}\n`;
     csv += `Ganancia real %${S}${S}${S}${S}${n(c.realProfitPct.toFixed(1))}%\n\n\n`;
   });
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href = url; a.download = "RecetApp_Costeo.csv"; a.click();
-  URL.revokeObjectURL(url);
+  downloadCSV(csv, "RecetApp_Costeo.csv");
+}
+
+function exportIngredientsCSV(ingredients) {
+  const S = ";";
+  const n = (v) => v.toString().replace(".", ",");
+  let csv = "sep=;\nINGREDIENTES\n\n";
+  csv += `Nombre${S}Categoría${S}Unidad${S}Precio compra${S}Cantidad${S}Merma %${S}Costo neto/u\n`;
+  ingredients.forEach(ing => {
+    const uc = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
+    const net = ing.waste_pct > 0 ? uc / (1 - ing.waste_pct / 100) : uc;
+    csv += `${ing.name}${S}${ing.category}${S}${ing.unit}${S}${n(ing.buy_price)}${S}${n(ing.buy_qty)}${S}${n(ing.waste_pct)}${S}${n(net.toFixed(4))}\n`;
+  });
+  downloadCSV(csv, "RecetApp_Ingredientes.csv");
+}
+
+function exportBusinessCSV(business) {
+  const S = ";";
+  const n = (v) => v.toString().replace(".", ",");
+  const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
+  const cfUnit = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
+  let csv = "sep=;\nCONFIGURACIÓN DE COSTOS\n\n";
+  csv += `COSTOS FIJOS MENSUALES\n`;
+  csv += `Concepto${S}Monto ($)\n`;
+  (business.fixed_costs || []).forEach(c => {
+    csv += `${c.name}${S}${n(c.amount)}\n`;
+  });
+  csv += `\nTOTAL COSTOS FIJOS${S}${n(totalFixed)}\n\n`;
+  csv += `PRODUCCIÓN Y COSTOS VARIABLES\n`;
+  csv += `Unidades por mes${S}${n(business.monthly_units)}\n`;
+  csv += `Costo fijo x unidad${S}${n(cfUnit.toFixed(2))}\n`;
+  csv += `% Delivery/plataformas${S}${n(business.delivery_pct)}\n`;
+  csv += `% IVA${S}${n(business.iva_pct)}\n`;
+  csv += `% Otros variables${S}${n(business.other_var_pct)}\n`;
+  downloadCSV(csv, "RecetApp_Costos.csv");
 }
 
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
@@ -1311,7 +1349,11 @@ export default function App() {
             ))}
           </nav>
           <div className="flex items-center gap-3">
-            <button onClick={() => exportCSV(recipes, ingredients, business)}
+            <button onClick={() => {
+                if (tab === "ingredients") exportIngredientsCSV(ingredients);
+                else if (tab === "business") exportBusinessCSV(business);
+                else exportCSV(recipes, ingredients, business);
+              }}
               className="hidden sm:flex items-center gap-1.5 text-sm text-gray-600 hover:text-emerald-600 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
               ⬇️ CSV
             </button>
