@@ -289,14 +289,35 @@ function LoginScreen({ onLogin }) {
 }
 
 // ─── ADMIN PANEL ──────────────────────────────────────────────────────────────
+// Permisos granulares por sección y acción (solo admin puede asignar)
+const DEFAULT_PERMS = {
+  dashboard:   { ver: true,  editar: false },
+  recipes:     { ver: true,  editar: false },
+  ingredients: { ver: true,  editar: false },
+  business:    { ver: true,  editar: false },
+};
+const FULL_PERMS = {
+  dashboard:   { ver: true, editar: true },
+  recipes:     { ver: true, editar: true },
+  ingredients: { ver: true, editar: true },
+  business:    { ver: true, editar: true },
+};
+const SECTION_LABELS = [
+  ["dashboard",   "📊 Resumen"],
+  ["recipes",     "🍽️ Recetas"],
+  ["ingredients", "📦 Ingredientes"],
+  ["business",    "⚙️ Costos"],
+];
+
 function AdminPanel({ profile }) {
-  const [users, setUsers]     = useState([]);
-  const [logs, setLogs]       = useState([]);
-  const [modal, setModal]     = useState(null); // null | "newUser" | "editUser"
+  const [users, setUsers]       = useState([]);
+  const [logs, setLogs]         = useState([]);
+  const [modal, setModal]       = useState(null);
   const [selected, setSelected] = useState(null);
-  const [form, setForm]       = useState({ email: "", username: "", password: "", role: "viewer", phone: "", permissions: { dashboard: true, recipes: true, ingredients: true, business: true } });
-  const [msg, setMsg]         = useState("");
-  const [tab, setTab]         = useState("users"); // users | logs
+  const emptyForm = { email: "", username: "", password: "", phone: "", role: "custom", permissions: DEFAULT_PERMS };
+  const [form, setForm]         = useState(emptyForm);
+  const [msg, setMsg]           = useState("");
+  const [tab, setTab]           = useState("users");
 
   useEffect(() => { loadUsers(); loadLogs(); }, []);
 
@@ -309,36 +330,45 @@ function AdminPanel({ profile }) {
     setLogs(data || []);
   };
 
+  // Crear usuario via signUp (no requiere service role)
   const createUser = async () => {
     setMsg("");
-    // Crear usuario en Supabase Auth via Admin API — usamos la función de invitación
-    const { data, error } = await supabase.auth.admin.createUser({
+    if (!form.email || !form.password || !form.username) return setMsg("Completá email, contraseña y nombre.");
+    if (form.password.length < 6) return setMsg("La contraseña debe tener al menos 6 caracteres.");
+
+    const { data, error } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
-      email_confirm: true,
     });
     if (error) return setMsg("Error: " + error.message);
-    // Crear perfil
-    await supabase.from("profiles").insert({
+    if (!data?.user) return setMsg("No se pudo crear el usuario.");
+
+    const perms = form.role === "admin" ? FULL_PERMS : form.permissions;
+    const { error: profErr } = await supabase.from("profiles").insert({
       id: data.user.id,
       username: form.username,
       role: form.role,
       phone: form.phone || null,
-      permissions: form.role === "viewer_partial" ? form.permissions : { dashboard:true, recipes:true, ingredients:true, business:true },
+      permissions: perms,
     });
+    if (profErr) return setMsg("Usuario creado pero error en perfil: " + profErr.message);
+
     await logActivity(profile, "create", "usuario", form.username);
-    setMsg("✅ Usuario creado correctamente.");
+    setMsg("✅ Usuario creado. Debe confirmar su email antes de ingresar.");
     loadUsers();
-    setTimeout(() => { setModal(null); setMsg(""); }, 1500);
+    setTimeout(() => { setModal(null); setMsg(""); }, 2500);
   };
 
   const updateUser = async () => {
     setMsg("");
-    const updates = { role: form.role, username: form.username, phone: form.phone || null, permissions: form.role === "viewer_partial" ? form.permissions : { dashboard:true, recipes:true, ingredients:true, business:true } };
-    await supabase.from("profiles").update(updates).eq("id", selected.id);
-    if (form.password) {
-      await supabase.auth.admin.updateUserById(selected.id, { password: form.password });
-    }
+    const perms = form.role === "admin" ? FULL_PERMS : form.permissions;
+    const { error } = await supabase.from("profiles").update({
+      role: form.role,
+      username: form.username,
+      phone: form.phone || null,
+      permissions: perms,
+    }).eq("id", selected.id);
+    if (error) return setMsg("Error: " + error.message);
     await logActivity(profile, "update", "usuario", form.username);
     setMsg("✅ Usuario actualizado.");
     loadUsers();
@@ -346,8 +376,6 @@ function AdminPanel({ profile }) {
   };
 
   const deleteUser = async (u) => {
-    
-    await supabase.auth.admin.deleteUser(u.id);
     await supabase.from("profiles").delete().eq("id", u.id);
     await logActivity(profile, "delete", "usuario", u.username);
     loadUsers();
@@ -355,12 +383,48 @@ function AdminPanel({ profile }) {
 
   const openEdit = (u) => {
     setSelected(u);
-    setForm({ email: "", username: u.username, password: "", role: u.role, phone: u.phone || "", permissions: u.permissions || { dashboard:true, recipes:true, ingredients:true, business:true } });
+    const perms = u.permissions && typeof u.permissions.dashboard === "object"
+      ? u.permissions
+      : DEFAULT_PERMS;
+    setForm({ email: "", username: u.username, password: "", role: u.role, phone: u.phone || "", permissions: perms });
     setModal("editUser");
   };
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet" };
-  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial" };
+  const setPerm = (section, action, val) => {
+    setForm(p => ({
+      ...p,
+      permissions: {
+        ...p.permissions,
+        [section]: { ...(p.permissions?.[section] || {}), [action]: val }
+      }
+    }));
+  };
+
+  // Si se activa editar, activar ver también
+  const handlePermChange = (section, action, val) => {
+    if (action === "editar" && val) setPerm(section, "ver", true);
+    if (action === "ver" && !val) setPerm(section, "editar", false);
+    setPerm(section, action, val);
+  };
+
+  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", custom: "violet" };
+  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", custom: "Personalizado",
+    viewer_partial: "Vista parcial" };
+
+  const permSummary = (u) => {
+    if (u.role === "admin") return "Acceso total";
+    if (!u.permissions) return "—";
+    const perms = u.permissions;
+    // Support both old format (boolean) and new format (object)
+    const sections = SECTION_LABELS.map(([key, label]) => {
+      const p = perms[key];
+      if (p === undefined) return null;
+      if (typeof p === "boolean") return p ? label.split(" ")[1] : null;
+      if (p.ver) return `${label.split(" ")[1]}${p.editar ? "✏️" : "👁"}`;
+      return null;
+    }).filter(Boolean);
+    return sections.length ? sections.join(" · ") : "Sin acceso";
+  };
 
   return (
     <div className="space-y-5">
@@ -377,15 +441,15 @@ function AdminPanel({ profile }) {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h3 className="font-semibold text-gray-700">Usuarios registrados</h3>
-            <Btn onClick={() => { setForm({ email:"", username:"", password:"", role:"viewer", phone:"", permissions:{ dashboard:true, recipes:true, ingredients:true, business:true } }); setMsg(""); setModal("newUser"); }}>
+            <Btn onClick={() => { setForm(emptyForm); setMsg(""); setModal("newUser"); }}>
               + Nuevo usuario
             </Btn>
           </div>
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
-            <table className="w-full text-sm min-w-[500px]">
+            <table className="w-full text-sm min-w-[560px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  {["Usuario","Rol","Teléfono","Creado",""].map(h => (
+                  {["Usuario","Rol","Accesos","Creado",""].map(h => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -394,8 +458,8 @@ function AdminPanel({ profile }) {
                 {users.map((u, idx) => (
                   <tr key={u.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"}`}>
                     <td className="px-4 py-3 font-medium text-gray-800">{u.username}</td>
-                    <td className="px-4 py-3"><Pill color={roleColor[u.role]}>{roleLabel[u.role]}</Pill></td>
-                    <td className="px-4 py-3 text-gray-500">{u.phone || "—"}</td>
+                    <td className="px-4 py-3"><Pill color={roleColor[u.role] || "gray"}>{roleLabel[u.role] || u.role}</Pill></td>
+                    <td className="px-4 py-3 text-xs text-gray-500">{permSummary(u)}</td>
                     <td className="px-4 py-3 text-gray-400 text-xs">{new Date(u.created_at).toLocaleDateString("es-AR")}</td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
@@ -432,9 +496,7 @@ function AdminPanel({ profile }) {
                   </td>
                   <td className="px-4 py-2 font-medium text-gray-700">{l.username}</td>
                   <td className="px-4 py-2">
-                    <Pill color={l.action==="delete"?"rose":l.action==="create"?"emerald":"sky"}>
-                      {l.action}
-                    </Pill>
+                    <Pill color={l.action==="delete"?"rose":l.action==="create"?"emerald":"sky"}>{l.action}</Pill>
                   </td>
                   <td className="px-4 py-2 text-gray-500">{l.entity}</td>
                   <td className="px-4 py-2 text-gray-500">{l.detail}</td>
@@ -446,57 +508,75 @@ function AdminPanel({ profile }) {
         </div>
       )}
 
-      {/* Modal nuevo/editar usuario */}
       {(modal === "newUser" || modal === "editUser") && (
-        <Modal title={modal === "newUser" ? "Nuevo usuario" : `Editar: ${selected?.username}`} onClose={() => setModal(null)}>
+        <Modal title={modal === "newUser" ? "Nuevo usuario" : `Editar: ${selected?.username}`} onClose={() => setModal(null)} wide>
           <div className="space-y-4">
             {modal === "newUser" && (
               <Field label="Email">
                 <TextInput value={form.email} onChange={e => setForm(p=>({...p, email: e.target.value}))} type="email" placeholder="usuario@email.com" />
               </Field>
             )}
-            <Field label="Nombre de usuario">
-              <TextInput value={form.username} onChange={e => setForm(p=>({...p, username: e.target.value}))} placeholder="ej: maria" />
-            </Field>
-            <Field label={modal === "editUser" ? "Nueva contraseña (dejá vacío para no cambiar)" : "Contraseña"}>
-              <TextInput value={form.password} onChange={e => setForm(p=>({...p, password: e.target.value}))} type="password" placeholder="••••••••" />
-            </Field>
-            <Field label="Teléfono (opcional, para SMS)">
-              <TextInput value={form.phone} onChange={e => setForm(p=>({...p, phone: e.target.value}))} placeholder="+5493511234567" />
-            </Field>
-            <Field label="Rol">
-              <select value={form.role} onChange={e => setForm(p=>({...p, role: e.target.value}))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
-                <option value="viewer">Solo lectura — ve todas las secciones</option>
-                <option value="viewer_partial">Vista parcial — el admin elige qué secciones ve</option>
-                <option value="editor">Editor — puede agregar y editar todo</option>
-                <option value="admin">Admin — acceso total + gestión de usuarios</option>
-              </select>
-            </Field>
-            {form.role === "viewer_partial" && (
-              <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 space-y-2">
-                <p className="text-xs font-semibold text-violet-700 mb-3">Secciones visibles para este usuario:</p>
-                {[
-                  ["dashboard",    "📊 Resumen"],
-                  ["recipes",      "🍽️ Recetas"],
-                  ["ingredients",  "📦 Ingredientes"],
-                  ["business",     "⚙️ Costos"],
-                ].map(([key, label]) => (
-                  <label key={key} className="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.permissions?.[key] ?? true}
-                      onChange={e => setForm(p => ({
-                        ...p,
-                        permissions: { ...(p.permissions || {}), [key]: e.target.checked }
-                      }))}
-                      className="w-4 h-4 rounded accent-violet-600"
-                    />
-                    <span className="text-sm text-gray-700">{label}</span>
-                  </label>
-                ))}
-              </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Nombre de usuario">
+                <TextInput value={form.username} onChange={e => setForm(p=>({...p, username: e.target.value}))} placeholder="ej: maria" />
+              </Field>
+              <Field label="Teléfono (opcional)">
+                <TextInput value={form.phone} onChange={e => setForm(p=>({...p, phone: e.target.value}))} placeholder="+5493511234567" />
+              </Field>
+            </div>
+            {modal === "newUser" && (
+              <Field label="Contraseña (mín. 6 caracteres)">
+                <TextInput value={form.password} onChange={e => setForm(p=>({...p, password: e.target.value}))} type="password" placeholder="••••••••" />
+              </Field>
             )}
+
+            {/* Permisos granulares — solo admin puede asignar */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-semibold text-slate-700">🔐 Accesos y permisos</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setForm(p=>({...p, role:"admin", permissions: FULL_PERMS}))}
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="admin"?"bg-rose-100 border-rose-300 text-rose-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
+                    Admin
+                  </button>
+                  <button onClick={() => setForm(p=>({...p, role:"custom", permissions: FULL_PERMS}))}
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="custom" && Object.values(form.permissions).every(p=>p.ver&&p.editar)?"bg-emerald-100 border-emerald-300 text-emerald-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
+                    Editor total
+                  </button>
+                  <button onClick={() => setForm(p=>({...p, role:"viewer", permissions: DEFAULT_PERMS}))}
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="viewer"?"bg-sky-100 border-sky-300 text-sky-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
+                    Solo lectura
+                  </button>
+                </div>
+              </div>
+              {form.role === "admin" ? (
+                <p className="text-xs text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">👑 Acceso total a todas las secciones + gestión de usuarios.</p>
+              ) : (
+                <div className="space-y-1">
+                  <div className="grid grid-cols-3 gap-2 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wide px-2">
+                    <span>Sección</span><span className="text-center">Ver</span><span className="text-center">Editar</span>
+                  </div>
+                  {SECTION_LABELS.map(([key, label]) => (
+                    <div key={key} className="grid grid-cols-3 gap-2 items-center bg-white rounded-lg px-2 py-2 border border-gray-100">
+                      <span className="text-sm text-gray-700">{label}</span>
+                      <div className="flex justify-center">
+                        <input type="checkbox" checked={form.permissions?.[key]?.ver ?? true}
+                          onChange={e => handlePermChange(key, "ver", e.target.checked)}
+                          className="w-4 h-4 accent-sky-500" />
+                      </div>
+                      <div className="flex justify-center">
+                        <input type="checkbox" checked={form.permissions?.[key]?.editar ?? false}
+                          onChange={e => handlePermChange(key, "editar", e.target.checked)}
+                          className="w-4 h-4 accent-emerald-500"
+                          disabled={!form.permissions?.[key]?.ver} />
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-xs text-gray-400 mt-2 px-1">👁 Ver = puede acceder a la sección · ✏️ Editar = puede agregar y modificar</p>
+                </div>
+              )}
+            </div>
+
             {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
             <div className="flex gap-3 justify-end">
               <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
@@ -667,7 +747,7 @@ function QuickAddIngredientModal({ onClose, onSave }) {
 }
 
 function IngredientsTab({ ingredients, setIngredients, profile }) {
-  const canEdit    = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
+  const canEdit    = profile?.role === "admin" || (profile?.permissions?.ingredients?.editar === true) || (profile?.role === "editor");
   const [modal, setModal]   = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm]     = useState({});
@@ -828,7 +908,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, profile }) {
-  const canEdit = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
+  const canEdit = profile?.role === "admin" || (profile?.permissions?.business?.editar === true) || (profile?.role === "editor");
 
   const save = async (updated) => {
     setBusiness(updated);
@@ -903,7 +983,7 @@ function BusinessTab({ business, setBusiness, profile }) {
 
 // ─── RECIPES ──────────────────────────────────────────────────────────────────
 function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile }) {
-  const canEdit = profile?.role !== "viewer" && profile?.role !== "viewer_partial";
+  const canEdit = profile?.role === "admin" || (profile?.permissions?.recipes?.editar === true) || (profile?.role === "editor");
   const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
   const [form, setForm]         = useState({});
@@ -1319,10 +1399,20 @@ export default function App() {
   const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet" };
   const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial" };
 
-  const perms = profile?.permissions || { dashboard:true, recipes:true, ingredients:true, business:true };
+  const perms = profile?.permissions || {};
   const canSeeTab = (id) => {
-    if (profile?.role === "viewer_partial") return perms[id] === true;
-    return true;
+    if (profile?.role === "admin") return true;
+    const p = perms[id];
+    if (p === undefined) return true; // sin restricción = acceso total
+    if (typeof p === "boolean") return p; // formato viejo
+    return p.ver === true; // formato nuevo
+  };
+  const canEditTab = (id) => {
+    if (profile?.role === "admin") return true;
+    const p = perms[id];
+    if (p === undefined) return true;
+    if (typeof p === "boolean") return p;
+    return p.editar === true;
   };
   const TABS = [
     { id:"dashboard",   label:"📊 Resumen",      show: canSeeTab("dashboard") },
