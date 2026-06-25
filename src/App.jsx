@@ -1187,7 +1187,6 @@ function BusinessTab({ business, setBusiness, profile }) {
             </Field>
           ))}
         </div>
-      </div>
       </div>}
       {!canEdit && (
         <p className="text-sm text-gray-400 bg-gray-50 px-4 py-2 rounded-lg">👁 Estás en modo solo lectura. No podés modificar la configuración.</p>
