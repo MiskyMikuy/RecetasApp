@@ -645,19 +645,24 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
   const saveIng = async () => {
     setSaving(true);
-    const ing = { ...form, buy_price: +form.buy_price, buy_qty: +form.buy_qty, waste_pct: +form.waste_pct, updated_by: profile.id };
-    let result;
-    if (!ing.id) {
-      ing.created_by = profile.id;
-      const { data } = await supabase.from("ingredients").insert(ing).select().single();
-      result = data;
-      setIngredients(prev => [...prev, result]);
-      await logActivity(profile, "create", "ingrediente", ing.name);
+    const cleanIng = {
+      name: form.name,
+      category: form.category,
+      unit: form.unit,
+      buy_price: +form.buy_price,
+      buy_qty: +form.buy_qty,
+      waste_pct: +form.waste_pct,
+    };
+    if (!form.id) {
+      const { data, error } = await supabase.from("ingredients").insert(cleanIng).select().single();
+      if (error) { console.error("Insert error:", error); setSaving(false); return; }
+      setIngredients(prev => [...prev, data]);
+      await logActivity(profile, "create", "ingrediente", cleanIng.name);
     } else {
-      const { data } = await supabase.from("ingredients").update(ing).eq("id", ing.id).select().single();
-      result = data;
-      setIngredients(prev => prev.map(i => i.id === ing.id ? result : i));
-      await logActivity(profile, "update", "ingrediente", ing.name);
+      const { data, error } = await supabase.from("ingredients").update(cleanIng).eq("id", form.id).select().single();
+      if (error) { console.error("Update error:", error); setSaving(false); return; }
+      setIngredients(prev => prev.map(i => i.id === form.id ? data : i));
+      await logActivity(profile, "update", "ingrediente", cleanIng.name);
     }
     setSaving(false);
     setModal(null);
@@ -754,30 +759,30 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
       )}
       {modal === "import" && (
         <ImportCSVModal onClose={() => setModal(null)} onImport={async (rows) => {
-  const existing = [...ingredients];
-  for (const row of rows) {
-    const cleanRow = {
-      name: row.name,
-      category: row.category,
-      unit: row.unit,
-      buy_price: row.buy_price,
-      buy_qty: row.buy_qty,
-      waste_pct: row.waste_pct,
-    };
-    const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
-    if (idx !== -1) {
-      const { data, error } = await supabase.from("ingredients").update(cleanRow).eq("id", existing[idx].id).select().single();
-      if (error) console.error("Update error:", error);
-      else if (data) existing[idx] = data;
-    } else {
-      const { data, error } = await supabase.from("ingredients").insert(cleanRow).select().single();
-      if (error) console.error("Insert error:", error);
-      else if (data) existing.push(data);
-    }
-  }
-  setIngredients(existing);
-  await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
-}}
+          const existing = [...ingredients];
+          for (const row of rows) {
+            const cleanRow = {
+              name: row.name,
+              category: row.category,
+              unit: row.unit,
+              buy_price: row.buy_price,
+              buy_qty: row.buy_qty,
+              waste_pct: row.waste_pct,
+            };
+            const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
+            if (idx !== -1) {
+              const { data, error } = await supabase.from("ingredients").update(cleanRow).eq("id", existing[idx].id).select().single();
+              if (error) console.error("Update error:", error);
+              else if (data) existing[idx] = data;
+            } else {
+              const { data, error } = await supabase.from("ingredients").insert(cleanRow).select().single();
+              if (error) console.error("Insert error:", error);
+              else if (data) existing.push(data);
+            }
+          }
+          setIngredients(existing);
+          await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
+        }} />
       )}
     </div>
   );
@@ -884,22 +889,21 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 
   const saveRecipe = async () => {
     setSaving(true);
-    const r = { ...form, portions: +form.portions, profit_pct: +form.profit_pct, updated_by: profile.id };
+    const r = { ...form, portions: +form.portions, profit_pct: +form.profit_pct };
     const lines = (r.recipe_ingredients || [])
       .filter(l => l.ingredient_id !== "" && l.ingredient_id !== undefined && l.qty !== "" && +l.qty > 0)
       .map(l => ({ ingredient_id: +l.ingredient_id, qty: +l.qty }));
 
     let recipeId = r.id;
     if (!r.id) {
-      r.created_by = profile.id;
       const { data } = await supabase.from("recipes")
-        .insert({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct, created_by: r.created_by, updated_by: r.updated_by })
+        .insert({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct })
         .select().single();
       recipeId = data.id;
       await logActivity(profile, "create", "receta", r.name);
     } else {
       await supabase.from("recipes")
-        .update({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct, updated_by: r.updated_by, updated_at: new Date().toISOString() })
+        .update({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct })
         .eq("id", r.id);
       await logActivity(profile, "update", "receta", r.name);
     }
@@ -927,8 +931,9 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   };
 
   const handleQuickIngSave = async (newIng) => {
+    const cleanNewIng = { name: newIng.name, category: newIng.category, unit: newIng.unit, buy_price: +newIng.buy_price, buy_qty: +newIng.buy_qty, waste_pct: +newIng.waste_pct };
     const { data } = await supabase.from("ingredients")
-      .insert({...newIng, created_by: profile.id, updated_by: profile.id})
+      .insert(cleanNewIng)
       .select().single();
     if (data) {
       setIngredients(prev => [...prev, data]);
