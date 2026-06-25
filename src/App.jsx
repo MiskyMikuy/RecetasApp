@@ -290,24 +290,147 @@ function LoginScreen({ onLogin }) {
 
 // ─── ADMIN PANEL ──────────────────────────────────────────────────────────────
 // Permisos granulares por sección y acción (solo admin puede asignar)
-const DEFAULT_PERMS = {
-  dashboard:   { ver: true,  editar: false },
-  recipes:     { ver: true,  editar: false },
-  ingredients: { ver: true,  editar: false },
-  business:    { ver: true,  editar: false },
+// ─── PERMISSION GROUPS ────────────────────────────────────────────────────────
+// Cada pestaña tiene grupos de campos: { ver: bool, editar: bool }
+// dashboard: stats, costos_stats, tabla_recetas
+// recipes: basicos, ingredientes, costos, precio_sugerido, precio_redondeado, ganancia
+// ingredients: basicos, precios_compra, costo_neto
+// business: costos_fijos, produccion_variables
+
+const PERM_GROUPS = {
+  dashboard:   ["stats", "costos_stats", "tabla_recetas"],
+  recipes:     ["basicos", "ingredientes", "costos", "precio_sugerido", "precio_redondeado", "ganancia"],
+  ingredients: ["basicos", "precios_compra", "costo_neto"],
+  business:    ["costos_fijos", "produccion_variables"],
 };
-const FULL_PERMS = {
-  dashboard:   { ver: true, editar: true },
-  recipes:     { ver: true, editar: true },
-  ingredients: { ver: true, editar: true },
-  business:    { ver: true, editar: true },
+
+const GROUP_LABELS = {
+  dashboard:   { stats: "📊 Estadísticas generales", costos_stats: "💰 Datos de costos", tabla_recetas: "📋 Tabla de recetas" },
+  recipes:     { basicos: "📋 Datos básicos", ingredientes: "🧾 Ingredientes", costos: "💰 Costos", precio_sugerido: "💵 Precio sugerido", precio_redondeado: "🎯 Precio redondeado", ganancia: "📈 Ganancia %" },
+  ingredients: { basicos: "📋 Datos básicos", precios_compra: "💰 Precios de compra", costo_neto: "📊 Costo neto calculado" },
+  business:    { costos_fijos: "🏢 Costos fijos", produccion_variables: "📈 Producción y variables" },
 };
+
+const makeTabPerms = (ver, editar) => ({ ver, editar });
+const makeGroups = (tab, ver, editar) => Object.fromEntries(PERM_GROUPS[tab].map(g => [g, makeTabPerms(ver, editar)]));
+
+// Presets
+const PRESETS = {
+  admin: {
+    label: "👑 Admin", color: "rose",
+    perms: {
+      dashboard:   makeGroups("dashboard", true, true),
+      recipes:     makeGroups("recipes", true, true),
+      ingredients: makeGroups("ingredients", true, true),
+      business:    makeGroups("business", true, true),
+      usuarios: true,
+    }
+  },
+  editor_total: {
+    label: "✏️ Editor total", color: "emerald",
+    perms: {
+      dashboard:   makeGroups("dashboard", true, true),
+      recipes:     makeGroups("recipes", true, true),
+      ingredients: makeGroups("ingredients", true, true),
+      business:    makeGroups("business", true, true),
+      usuarios: false,
+    }
+  },
+  cocinero: {
+    label: "👨‍🍳 Cocinero", color: "amber",
+    perms: {
+      dashboard:   { stats: makeTabPerms(true,false), costos_stats: makeTabPerms(false,false), tabla_recetas: makeTabPerms(true,false) },
+      recipes:     { basicos: makeTabPerms(true,true), ingredientes: makeTabPerms(true,true), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: { basicos: makeTabPerms(true,true), precios_compra: makeTabPerms(true,true), costo_neto: makeTabPerms(false,false) },
+      business:    makeGroups("business", false, false),
+      usuarios: false,
+    }
+  },
+  mozo: {
+    label: "👨‍🍽️ Mozo", color: "sky",
+    perms: {
+      dashboard:   makeGroups("dashboard", false, false),
+      recipes:     { basicos: makeTabPerms(true,false), ingredientes: makeTabPerms(false,false), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: makeGroups("ingredients", false, false),
+      business:    makeGroups("business", false, false),
+      usuarios: false,
+      es_mozo: true,
+    }
+  },
+  cliente: {
+    label: "🛒 Cliente", color: "violet",
+    perms: {
+      dashboard:   makeGroups("dashboard", false, false),
+      recipes:     { basicos: makeTabPerms(true,false), ingredientes: makeTabPerms(false,false), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: makeGroups("ingredients", false, false),
+      business:    makeGroups("business", false, false),
+      usuarios: false,
+    }
+  },
+  proveedor: {
+    label: "🏭 Proveedor", color: "gray",
+    perms: {
+      dashboard:   makeGroups("dashboard", false, false),
+      recipes:     makeGroups("recipes", false, false),
+      ingredients: { basicos: makeTabPerms(true,false), precios_compra: makeTabPerms(true,false), costo_neto: makeTabPerms(false,false) },
+      business:    makeGroups("business", false, false),
+      usuarios: false,
+    }
+  },
+  solo_lectura: {
+    label: "👁 Solo lectura", color: "sky",
+    perms: {
+      dashboard:   makeGroups("dashboard", true, false),
+      recipes:     makeGroups("recipes", true, false),
+      ingredients: makeGroups("ingredients", true, false),
+      business:    makeGroups("business", true, false),
+      usuarios: false,
+    }
+  },
+};
+
+// Helper: check group permission
+const canP = (profile, tab, group, action = "ver") => {
+  if (profile?.role === "admin") return true;
+  const perms = profile?.permissions;
+  if (!perms) return false;
+  const tabP = perms[tab];
+  if (!tabP) return false;
+  const grp = tabP[group];
+  if (!grp) return false;
+  return grp[action] === true;
+};
+
+// Can see tab at all?
+const canSeeTabPerms = (profile, tab) => {
+  if (profile?.role === "admin") return true;
+  if (tab === "admin") return profile?.permissions?.usuarios === true;
+  const perms = profile?.permissions;
+  if (!perms) return false;
+  const tabP = perms[tab];
+  if (!tabP) return false;
+  return Object.values(tabP).some(g => g?.ver === true);
+};
+
+// Can edit anything in tab?
+const canEditTabPerms = (profile, tab) => {
+  if (profile?.role === "admin") return true;
+  const perms = profile?.permissions;
+  if (!perms) return false;
+  const tabP = perms[tab];
+  if (!tabP) return false;
+  return Object.values(tabP).some(g => g?.editar === true);
+};
+
 const SECTION_LABELS = [
   ["dashboard",   "📊 Resumen"],
   ["recipes",     "🍽️ Recetas"],
   ["ingredients", "📦 Ingredientes"],
   ["business",    "⚙️ Costos"],
 ];
+
+const DEFAULT_PERMS = PRESETS.solo_lectura.perms;
+const FULL_PERMS = PRESETS.admin.perms;
 
 function AdminPanel({ profile }) {
   const [users, setUsers]       = useState([]);
@@ -361,7 +484,7 @@ function AdminPanel({ profile }) {
 
     await logActivity(profile, "create", "usuario", form.username);
     setMsg("✅ Usuario creado correctamente.");
-    loadUsers();
+    await loadUsers();
     setTimeout(() => { setModal(null); setMsg(""); }, 1500);
   };
 
@@ -389,9 +512,14 @@ function AdminPanel({ profile }) {
 
   const openEdit = (u) => {
     setSelected(u);
-    const perms = u.permissions && typeof u.permissions.dashboard === "object"
-      ? u.permissions
-      : DEFAULT_PERMS;
+    // Migrate old format if needed
+    let perms = u.permissions;
+    if (!perms || typeof perms.dashboard === "boolean") {
+      perms = DEFAULT_PERMS;
+    } else if (perms.dashboard && typeof perms.dashboard.ver === "boolean" && !perms.dashboard.stats) {
+      // Old format {ver, editar} per tab — migrate to group format
+      perms = DEFAULT_PERMS;
+    }
     setForm({ email: "", username: u.username, password: "", role: u.role, phone: u.phone || "", permissions: perms });
     setModal("editUser");
   };
@@ -421,15 +549,21 @@ function AdminPanel({ profile }) {
     if (u.role === "admin") return "Acceso total";
     if (!u.permissions) return "—";
     const perms = u.permissions;
-    // Support both old format (boolean) and new format (object)
-    const sections = SECTION_LABELS.map(([key, label]) => {
-      const p = perms[key];
-      if (p === undefined) return null;
-      if (typeof p === "boolean") return p ? label.split(" ")[1] : null;
-      if (p.ver) return `${label.split(" ")[1]}${p.editar ? "✏️" : "👁"}`;
-      return null;
-    }).filter(Boolean);
-    return sections.length ? sections.join(" · ") : "Sin acceso";
+    const parts = [];
+    // Find matching preset
+    const matchedPreset = Object.entries(PRESETS).find(([k, p]) =>
+      JSON.stringify(p.perms) === JSON.stringify(perms)
+    );
+    if (matchedPreset) return matchedPreset[1].label;
+    // Manual summary
+    SECTION_LABELS.forEach(([key, label]) => {
+      const tabP = perms[key];
+      if (!tabP) return;
+      const hasVer = typeof tabP === "object" && Object.values(tabP).some(g => g?.ver);
+      const hasEdit = typeof tabP === "object" && Object.values(tabP).some(g => g?.editar);
+      if (hasVer) parts.push(`${label.split(" ")[1]}${hasEdit ? "✏️" : "👁"}`);
+    });
+    return parts.length ? parts.join(" · ") : "Sin acceso";
   };
 
   return (
@@ -447,9 +581,22 @@ function AdminPanel({ profile }) {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h3 className="font-semibold text-gray-700">Usuarios registrados</h3>
-            <Btn onClick={() => { setForm(emptyForm); setMsg(""); setModal("newUser"); }}>
-              + Nuevo usuario
-            </Btn>
+            <div className="flex gap-2">
+              <Btn variant="secondary" size="sm" onClick={() => {
+                const S = ";";
+                let csv = "sep=;\nUSUARIOS\n\nUsuario;Rol;Accesos;Teléfono;Creado\n";
+                users.forEach(u => {
+                  csv += `${u.username}${S}${u.role}${S}${permSummary(u)}${S}${u.phone||""}${S}${new Date(u.created_at).toLocaleDateString("es-AR")}\n`;
+                });
+                const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a"); a.href=url; a.download="RecetApp_Usuarios.csv"; a.click();
+                URL.revokeObjectURL(url);
+              }}>⬇️ CSV</Btn>
+              <Btn onClick={() => { setForm(emptyForm); setMsg(""); setModal("newUser"); }}>
+                + Nuevo usuario
+              </Btn>
+            </div>
           </div>
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
             <table className="w-full text-sm min-w-[560px]">
@@ -485,6 +632,20 @@ function AdminPanel({ profile }) {
       )}
 
       {tab === "logs" && (
+        <div className="space-y-3">
+        <div className="flex justify-end">
+          <Btn variant="secondary" size="sm" onClick={() => {
+            const S = ";";
+            let csv = "sep=;\nACTIVIDAD\n\nFecha;Usuario;Acción;Entidad;Detalle\n";
+            logs.forEach(l => {
+              csv += `${new Date(l.created_at).toLocaleString("es-AR")}${S}${l.username}${S}${l.action}${S}${l.entity}${S}${l.detail}\n`;
+            });
+            const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href=url; a.download="RecetApp_Actividad.csv"; a.click();
+            URL.revokeObjectURL(url);
+          }}>⬇️ CSV Actividad</Btn>
+        </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
           <table className="w-full text-sm min-w-[560px]">
             <thead>
@@ -512,6 +673,7 @@ function AdminPanel({ profile }) {
           </table>
           {logs.length === 0 && <div className="text-center py-10 text-gray-400">Sin actividad registrada</div>}
         </div>
+        </div>
       )}
 
       {(modal === "newUser" || modal === "editUser") && (
@@ -537,50 +699,94 @@ function AdminPanel({ profile }) {
             )}
 
             {/* Permisos granulares — solo admin puede asignar */}
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-700">🔐 Accesos y permisos</p>
-                <div className="flex gap-2">
-                  <button onClick={() => setForm(p=>({...p, role:"admin", permissions: FULL_PERMS}))}
-                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="admin"?"bg-rose-100 border-rose-300 text-rose-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
-                    Admin
-                  </button>
-                  <button onClick={() => setForm(p=>({...p, role:"custom", permissions: FULL_PERMS}))}
-                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="custom" && Object.values(form.permissions).every(p=>p.ver&&p.editar)?"bg-emerald-100 border-emerald-300 text-emerald-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
-                    Editor total
-                  </button>
-                  <button onClick={() => setForm(p=>({...p, role:"viewer", permissions: DEFAULT_PERMS}))}
-                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${form.role==="viewer"?"bg-sky-100 border-sky-300 text-sky-700":"border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
-                    Solo lectura
-                  </button>
-                </div>
               </div>
-              {form.role === "admin" ? (
-                <p className="text-xs text-rose-600 bg-rose-50 px-3 py-2 rounded-lg">👑 Acceso total a todas las secciones + gestión de usuarios.</p>
-              ) : (
-                <div className="space-y-1">
-                  <div className="grid grid-cols-3 gap-2 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wide px-2">
-                    <span>Sección</span><span className="text-center">Ver</span><span className="text-center">Editar</span>
+              {/* Presets rápidos */}
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(PRESETS).map(([key, preset]) => (
+                  <button key={key}
+                    onClick={() => setForm(p => ({ ...p, role: key === "admin" ? "admin" : "custom", permissions: preset.perms }))}
+                    className={`text-xs px-2 py-1 rounded-lg border transition-colors ${
+                      JSON.stringify(form.permissions) === JSON.stringify(preset.perms)
+                        ? "bg-emerald-100 border-emerald-400 text-emerald-700 font-semibold"
+                        : "border-gray-200 text-gray-500 hover:bg-gray-100"
+                    }`}>
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {/* Edición manual por grupos */}
+              <details className="group">
+                <summary className="cursor-pointer text-xs text-emerald-600 font-medium hover:text-emerald-700">
+                  ✏️ Personalizar manualmente
+                </summary>
+                <div className="mt-3 space-y-3">
+                  {/* Usuarios */}
+                  <div className="bg-white rounded-lg border border-gray-100 p-3">
+                    <p className="text-xs font-semibold text-gray-600 mb-2">👥 Usuarios</p>
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input type="checkbox"
+                        checked={form.permissions?.usuarios === true}
+                        onChange={e => setForm(p => ({ ...p, permissions: { ...p.permissions, usuarios: e.target.checked } }))}
+                        className="w-4 h-4 accent-rose-500" />
+                      Gestionar usuarios (solo Admin)
+                    </label>
                   </div>
-                  {SECTION_LABELS.map(([key, label]) => (
-                    <div key={key} className="grid grid-cols-3 gap-2 items-center bg-white rounded-lg px-2 py-2 border border-gray-100">
-                      <span className="text-sm text-gray-700">{label}</span>
-                      <div className="flex justify-center">
-                        <input type="checkbox" checked={form.permissions?.[key]?.ver ?? true}
-                          onChange={e => handlePermChange(key, "ver", e.target.checked)}
-                          className="w-4 h-4 accent-sky-500" />
+                  {/* Por pestaña y grupo */}
+                  {SECTION_LABELS.map(([tabKey, tabLabel]) => (
+                    <div key={tabKey} className="bg-white rounded-lg border border-gray-100 p-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">{tabLabel}</p>
+                      <div className="grid grid-cols-3 gap-1 text-xs text-gray-400 font-semibold uppercase mb-1 px-1">
+                        <span>Grupo</span><span className="text-center">Ver</span><span className="text-center">Editar</span>
                       </div>
-                      <div className="flex justify-center">
-                        <input type="checkbox" checked={form.permissions?.[key]?.editar ?? false}
-                          onChange={e => handlePermChange(key, "editar", e.target.checked)}
-                          className="w-4 h-4 accent-emerald-500"
-                          disabled={!form.permissions?.[key]?.ver} />
-                      </div>
+                      {PERM_GROUPS[tabKey].map(grp => (
+                        <div key={grp} className="grid grid-cols-3 gap-1 items-center py-1 border-t border-gray-50">
+                          <span className="text-xs text-gray-600">{GROUP_LABELS[tabKey][grp]}</span>
+                          <div className="flex justify-center">
+                            <input type="checkbox"
+                              checked={form.permissions?.[tabKey]?.[grp]?.ver ?? false}
+                              onChange={e => {
+                                const val = e.target.checked;
+                                setForm(p => ({
+                                  ...p,
+                                  permissions: {
+                                    ...p.permissions,
+                                    [tabKey]: {
+                                      ...p.permissions?.[tabKey],
+                                      [grp]: { ver: val, editar: val ? (p.permissions?.[tabKey]?.[grp]?.editar ?? false) : false }
+                                    }
+                                  }
+                                }));
+                              }}
+                              className="w-4 h-4 accent-sky-500" />
+                          </div>
+                          <div className="flex justify-center">
+                            <input type="checkbox"
+                              checked={form.permissions?.[tabKey]?.[grp]?.editar ?? false}
+                              disabled={!form.permissions?.[tabKey]?.[grp]?.ver}
+                              onChange={e => {
+                                const val = e.target.checked;
+                                setForm(p => ({
+                                  ...p,
+                                  permissions: {
+                                    ...p.permissions,
+                                    [tabKey]: {
+                                      ...p.permissions?.[tabKey],
+                                      [grp]: { ...p.permissions?.[tabKey]?.[grp], editar: val }
+                                    }
+                                  }
+                                }));
+                              }}
+                              className="w-4 h-4 accent-emerald-500 disabled:opacity-30" />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ))}
-                  <p className="text-xs text-gray-400 mt-2 px-1">👁 Ver = puede acceder a la sección · ✏️ Editar = puede agregar y modificar</p>
                 </div>
-              )}
+              </details>
             </div>
 
             {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
@@ -753,7 +959,7 @@ function QuickAddIngredientModal({ onClose, onSave }) {
 }
 
 function IngredientsTab({ ingredients, setIngredients, profile }) {
-  const canEdit    = profile?.role === "admin" || (profile?.permissions?.ingredients?.editar === true) || (profile?.role === "editor");
+  const canEdit = canEditTabPerms(profile, "ingredients");
   const [modal, setModal]   = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm]     = useState({});
@@ -914,7 +1120,9 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, profile }) {
-  const canEdit = profile?.role === "admin" || (profile?.permissions?.business?.editar === true) || (profile?.role === "editor");
+  const canEdit = canEditTabPerms(profile, "business");
+  const canSeeFijos = canP(profile, "business", "costos_fijos");
+  const canSeeVars = canP(profile, "business", "produccion_variables");
 
   const save = async (updated) => {
     setBusiness(updated);
@@ -945,7 +1153,7 @@ function BusinessTab({ business, setBusiness, profile }) {
         <StatCard label="Unidades estimadas/mes" value={business.monthly_units} accent="sky" />
         <StatCard label="Costo fijo x unidad" value={`$${cfUnit.toFixed(2)}`} sub="Aplicado a cada receta" accent="emerald" />
       </div>
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      {canSeeFijos && <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">🏢 Costos fijos mensuales</h3>
         <div className="space-y-2">
           {(business.fixed_costs || []).map(c => (
@@ -962,8 +1170,8 @@ function BusinessTab({ business, setBusiness, profile }) {
           ))}
         </div>
         {canEdit && <button onClick={addCost} className="mt-3 text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>}
-      </div>
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+      </div>}
+      {canSeeVars && <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">📈 Producción y costos variables</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Unidades producidas por mes">
@@ -980,6 +1188,7 @@ function BusinessTab({ business, setBusiness, profile }) {
           ))}
         </div>
       </div>
+      </div>}
       {!canEdit && (
         <p className="text-sm text-gray-400 bg-gray-50 px-4 py-2 rounded-lg">👁 Estás en modo solo lectura. No podés modificar la configuración.</p>
       )}
@@ -989,7 +1198,12 @@ function BusinessTab({ business, setBusiness, profile }) {
 
 // ─── RECIPES ──────────────────────────────────────────────────────────────────
 function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile }) {
-  const canEdit = profile?.role === "admin" || (profile?.permissions?.recipes?.editar === true) || (profile?.role === "editor");
+  const canEdit = canEditTabPerms(profile, "recipes");
+  const showIngredientes = canP(profile, "recipes", "ingredientes");
+  const showCostos = canP(profile, "recipes", "costos");
+  const showPrecioSug = canP(profile, "recipes", "precio_sugerido");
+  const showPrecioRed = canP(profile, "recipes", "precio_redondeado");
+  const showGanancia = canP(profile, "recipes", "ganancia");
   const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
   const [form, setForm]         = useState({});
@@ -1135,12 +1349,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
               )}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
-              <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`} accent="rose" />
-              <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`} accent="amber" />
-              <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="emerald" />
-              <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />
+              {showCostos && <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`} accent="rose" />}
+              {showPrecioSug && <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`} accent="amber" />}
+              {showPrecioRed && <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="emerald" />}
+              {showGanancia && <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />}
             </div>
-            <div className="px-5 pb-3">
+            {showIngredientes && <div className="px-5 pb-3">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Ingredientes</h3>
               <table className="w-full text-sm min-w-[480px]">
                 <thead>
@@ -1162,9 +1376,9 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                   ))}
                 </tbody>
               </table>
-            </div>
+            </div>}
             <div className="mx-5 mb-5 rounded-xl overflow-hidden text-sm border border-gray-100">
-              {[
+              {showCostos && [
                 ["Costo MP total", `$${calc.mpTotal.toFixed(2)}`, "bg-white"],
                 ["Costo MP x porción", `$${calc.mpPerPortion.toFixed(2)}`, "bg-white"],
                 ["Costo fijo x porción", `$${calc.cfPerUnit.toFixed(2)}`, "bg-gray-50"],
@@ -1174,14 +1388,14 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                   <span className="text-gray-600">{l}</span><span className="font-medium">{v}</span>
                 </div>
               ))}
-              <div className="flex justify-between px-4 py-3 bg-rose-50">
+              {showCostos && <div className="flex justify-between px-4 py-3 bg-rose-50">
                 <span className="font-bold text-rose-700">COSTO TOTAL x porción</span>
                 <span className="font-bold text-rose-700">${calc.totalCost.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between px-4 py-3.5 bg-emerald-600">
+              </div>}
+              {showPrecioRed && <div className="flex justify-between px-4 py-3.5 bg-emerald-600">
                 <span className="font-bold text-white text-base">PRECIO DE VENTA</span>
                 <span className="font-bold text-white text-xl">${calc.roundedPrice.toLocaleString("es-AR")}</span>
-              </div>
+              </div>}
             </div>
           </div>
         ) : (
@@ -1298,6 +1512,98 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   );
 }
 
+
+// ─── COMANDA TAB (MOZO) ───────────────────────────────────────────────────────
+function ComandaTab({ recipes, ingredients, business }) {
+  const [items, setItems] = useState({}); // { recipeId: qty }
+
+  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
+  const setQty = (id, val) => {
+    const n = Math.max(0, parseInt(val) || 0);
+    setItems(p => ({ ...p, [id]: n }));
+  };
+  const selected = recipes.filter(r => (items[r.id] || 0) > 0);
+  const total = selected.reduce((s, r) => {
+    const c = calcRecipe(r, ingredients, business);
+    return s + c.roundedPrice * (items[r.id] || 1);
+  }, 0);
+
+  const whatsappText = () => {
+    let txt = "🧾 *Comanda RecetApp*\n\n";
+    selected.forEach(r => {
+      const c = calcRecipe(r, ingredients, business);
+      txt += `• ${items[r.id]}x ${r.name} — $${(c.roundedPrice * items[r.id]).toLocaleString("es-AR")}\n`;
+    });
+    txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
+    return encodeURIComponent(txt);
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl mx-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar comanda</h2>
+        <div className="space-y-2">
+          {recipes.map(r => {
+            const c = calcRecipe(r, ingredients, business);
+            const qty = items[r.id] || 0;
+            return (
+              <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-emerald-300 bg-emerald-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
+                <input type="checkbox" checked={qty > 0}
+                  onChange={() => toggle(r.id)}
+                  className="w-5 h-5 accent-emerald-500 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-gray-800 text-sm">{r.name}</p>
+                  <p className="text-xs text-gray-400">{r.category}</p>
+                </div>
+                <p className="font-bold text-emerald-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
+                {qty > 0 && (
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setQty(r.id, qty - 1)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center">−</button>
+                    <input type="number" min="0" value={qty}
+                      onChange={e => setQty(r.id, e.target.value)}
+                      className="w-10 text-center border border-gray-200 rounded-lg py-0.5 text-sm font-medium" />
+                    <button onClick={() => setQty(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-bold text-sm flex items-center justify-center">+</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {recipes.length === 0 && <p className="text-center text-gray-400 py-8">Sin recetas disponibles</p>}
+        </div>
+      </div>
+
+      {selected.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-emerald-200 p-5 space-y-3">
+          <h3 className="font-bold text-gray-700">Resumen</h3>
+          {selected.map(r => {
+            const c = calcRecipe(r, ingredients, business);
+            return (
+              <div key={r.id} className="flex justify-between text-sm">
+                <span className="text-gray-600">{items[r.id]}× {r.name}</span>
+                <span className="font-medium">${(c.roundedPrice * items[r.id]).toLocaleString("es-AR")}</span>
+              </div>
+            );
+          })}
+          <div className="flex justify-between border-t border-gray-100 pt-3 font-bold text-lg">
+            <span>TOTAL</span>
+            <span className="text-emerald-600">${total.toLocaleString("es-AR")}</span>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <a href={`https://wa.me/?text=${whatsappText()}`} target="_blank" rel="noreferrer"
+              className="flex-1 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 text-center transition-colors">
+              📲 Compartir por WhatsApp
+            </a>
+            <button onClick={() => setItems({})}
+              className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
+              Limpiar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard({ recipes, ingredients, business }) {
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
@@ -1402,30 +1708,19 @@ export default function App() {
   );
   if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet" };
-  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial" };
+  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet", custom: "violet" };
+  const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial", custom: "Personalizado" };
 
-  const perms = profile?.permissions || {};
-  const canSeeTab = (id) => {
-    if (profile?.role === "admin") return true;
-    const p = perms[id];
-    if (p === undefined) return true; // sin restricción = acceso total
-    if (typeof p === "boolean") return p; // formato viejo
-    return p.ver === true; // formato nuevo
-  };
-  const canEditTab = (id) => {
-    if (profile?.role === "admin") return true;
-    const p = perms[id];
-    if (p === undefined) return true;
-    if (typeof p === "boolean") return p;
-    return p.editar === true;
-  };
+  const canSeeTab = (id) => canSeeTabPerms(profile, id);
+  const canEditTab = (id) => canEditTabPerms(profile, id);
+  const esMozo = profile?.permissions?.es_mozo === true;
   const TABS = [
-    { id:"dashboard",   label:"📊 Resumen",      show: canSeeTab("dashboard") },
-    { id:"recipes",     label:"🍽️ Recetas",      show: canSeeTab("recipes") },
-    { id:"ingredients", label:"📦 Ingredientes",  show: canSeeTab("ingredients") },
-    { id:"business",    label:"⚙️ Costos",        show: canSeeTab("business") },
-    { id:"admin",       label:"👥 Usuarios",      show: profile?.role === "admin" },
+    { id:"dashboard",   label:"📊 Resumen",      show: !esMozo && canSeeTab("dashboard") },
+    { id:"recipes",     label:"🍽️ Recetas",      show: !esMozo && canSeeTab("recipes") },
+    { id:"ingredients", label:"📦 Ingredientes",  show: !esMozo && canSeeTab("ingredients") },
+    { id:"business",    label:"⚙️ Costos",        show: !esMozo && canSeeTab("business") },
+    { id:"comanda",     label:"🧾 Comanda",       show: esMozo },
+    { id:"admin",       label:"👥 Usuarios",      show: profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
 
   return (
@@ -1479,7 +1774,8 @@ export default function App() {
         {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
         {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} profile={profile} />}
         {tab === "business"    && <BusinessTab business={business} setBusiness={setBusiness} profile={profile} />}
-        {tab === "admin"       && profile?.role === "admin" && <AdminPanel profile={profile} />}
+        {tab === "admin"       && profile?.permissions?.usuarios === true && <AdminPanel profile={profile} />}
+        {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile} />}
       </main>
     </div>
   );
