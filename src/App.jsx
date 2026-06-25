@@ -1164,6 +1164,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           </div>
         </Modal>
       )}
+      {modal === "quickIng" && (
+        <QuickAddIngredientModal
+          onClose={() => { setModal("form"); setQuickIngTarget(null); }}
+          onSave={handleQuickIngSave}
+        />
+      )}
     </div>
   );
 }
