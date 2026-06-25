@@ -330,33 +330,39 @@ function AdminPanel({ profile }) {
     setLogs(data || []);
   };
 
-  // Crear usuario via signUp (no requiere service role)
+  // Crear usuario via Edge Function (usa service role key de forma segura)
   const createUser = async () => {
     setMsg("");
     if (!form.email || !form.password || !form.username) return setMsg("Completá email, contraseña y nombre.");
     if (form.password.length < 6) return setMsg("La contraseña debe tener al menos 6 caracteres.");
 
-    const { data, error } = await supabase.auth.signUp({
-      email: form.email,
-      password: form.password,
-    });
-    if (error) return setMsg("Error: " + error.message);
-    if (!data?.user) return setMsg("No se pudo crear el usuario.");
-
     const perms = form.role === "admin" ? FULL_PERMS : form.permissions;
-    const { error: profErr } = await supabase.from("profiles").insert({
-      id: data.user.id,
-      username: form.username,
-      role: form.role,
-      phone: form.phone || null,
-      permissions: perms,
+    const { data: { session } } = await supabase.auth.getSession();
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/create-user`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session?.access_token}`,
+        "apikey": SUPABASE_KEY,
+      },
+      body: JSON.stringify({
+        email: form.email,
+        password: form.password,
+        username: form.username,
+        phone: form.phone || null,
+        role: form.role,
+        permissions: perms,
+      }),
     });
-    if (profErr) return setMsg("Usuario creado pero error en perfil: " + profErr.message);
+
+    const result = await res.json();
+    if (!res.ok) return setMsg("Error: " + (result.error || "Error desconocido"));
 
     await logActivity(profile, "create", "usuario", form.username);
-    setMsg("✅ Usuario creado. Debe confirmar su email antes de ingresar.");
+    setMsg("✅ Usuario creado correctamente.");
     loadUsers();
-    setTimeout(() => { setModal(null); setMsg(""); }, 2500);
+    setTimeout(() => { setModal(null); setMsg(""); }, 1500);
   };
 
   const updateUser = async () => {
