@@ -246,6 +246,49 @@ function Btn({ children, onClick, variant = "primary", size = "md", disabled = f
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
+// ─── ELEGIR NUEVA CONTRASEÑA (link de "olvidé mi contraseña") ────────────────
+function SetNewPasswordScreen({ onDone }) {
+  const [pw, setPw]           = useState("");
+  const [pw2, setPw2]         = useState("");
+  const [error, setError]     = useState("");
+  const [saving, setSaving]   = useState(false);
+
+  const save = async () => {
+    setError("");
+    if (pw.length < 6) return setError("La contraseña debe tener al menos 6 caracteres.");
+    if (pw !== pw2) return setError("Las dos contraseñas no coinciden.");
+    setSaving(true);
+    const { error: err } = await supabase.auth.updateUser({ password: pw });
+    setSaving(false);
+    if (err) return setError("No se pudo guardar: " + err.message);
+    onDone();
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4"
+         style={{ background: "linear-gradient(135deg,#064e3b 0%,#065f46 50%,#047857 100%)" }}>
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-8">
+          <div className="text-6xl mb-3">🔑</div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Elegí una nueva contraseña</h1>
+        </div>
+        <div className="bg-white rounded-2xl shadow-2xl p-7 space-y-4">
+          <Field label="Contraseña nueva">
+            <TextInput value={pw} onChange={e => setPw(e.target.value)} type="password" placeholder="••••••••" />
+          </Field>
+          <Field label="Repetila">
+            <TextInput value={pw2} onChange={e => setPw2(e.target.value)} type="password" placeholder="••••••••" />
+          </Field>
+          {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">{error}</p>}
+          <Btn onClick={save} className="w-full" size="lg" disabled={saving}>
+            {saving ? "Guardando..." : "Guardar y entrar"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin }) {
   const [form, setForm]   = useState({ email: "", password: "" });
   const [error, setError] = useState("");
@@ -2102,6 +2145,7 @@ export default function App() {
   const [user, setUser]           = useState(null);
   const [profile, setProfile]     = useState(null);
   const [loading, setLoading]     = useState(true);
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [tab, setTab]             = useState("dashboard");
   const [ingredients, setIngredients] = useState([]);
   const [recipes, setRecipes]         = useState([]);
@@ -2113,6 +2157,10 @@ export default function App() {
       else setLoading(false);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Link de "olvidé mi contraseña": Supabase dispara este evento antes de
+      // loguear de verdad — mostramos la pantalla de "elegir nueva contraseña"
+      // en vez de entrar directo a la app.
+      if (_event === "PASSWORD_RECOVERY") { setUser(session?.user ?? null); setRecoveryMode(true); setLoading(false); return; }
       if (session?.user) { setUser(session.user); loadProfile(session.user.id); }
       else { setUser(null); setProfile(null); setLoading(false); }
     });
@@ -2146,6 +2194,12 @@ export default function App() {
     <div className="min-h-screen flex items-center justify-center bg-emerald-50">
       <div className="text-emerald-600 text-xl font-medium">🍽️ Cargando...</div>
     </div>
+  );
+  if (recoveryMode) return (
+    <SetNewPasswordScreen onDone={() => {
+      setRecoveryMode(false);
+      if (user) loadProfile(user.id); else setLoading(false);
+    }} />
   );
   if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
   if (!profile) return (
