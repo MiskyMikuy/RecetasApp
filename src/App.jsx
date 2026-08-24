@@ -250,6 +250,7 @@ function LoginScreen({ onLogin }) {
   const [form, setForm]   = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   const handle = async () => {
     setError(""); setLoading(true);
@@ -259,6 +260,17 @@ function LoginScreen({ onLogin }) {
     setLoading(false);
     if (err) return setError("Email o contraseña incorrectos.");
     onLogin(data.user);
+  };
+
+  const handleGoogle = async () => {
+    setError(""); setGoogleLoading(true);
+    const { error: err } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    // Si hay error se dispara al toque (ej: proveedor no habilitado). Si no,
+    // el navegador redirige a Google y volvemos con la sesión ya iniciada.
+    if (err) { setGoogleLoading(false); setError("No se pudo iniciar con Google: " + err.message); }
   };
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
@@ -272,6 +284,14 @@ function LoginScreen({ onLogin }) {
           <p className="text-emerald-200 text-sm mt-1">Costeo inteligente de recetas</p>
         </div>
         <div className="bg-white rounded-2xl shadow-2xl p-7">
+          <button onClick={handleGoogle} disabled={googleLoading}
+            className="w-full flex items-center justify-center gap-2 border border-gray-200 rounded-xl py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-60">
+            <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.57 2.7-3.87 2.7-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.81.54-1.84.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 0 1 3.67 9c0-.59.1-1.17.28-1.7V4.97H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.03l2.99-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58A8.6 8.6 0 0 0 9 0 9 9 0 0 0 .96 4.97l2.99 2.33C4.66 5.17 6.65 3.58 9 3.58z"/></svg>
+            {googleLoading ? "Redirigiendo..." : "Continuar con Google"}
+          </button>
+          <div className="flex items-center gap-3 my-4">
+            <div className="h-px bg-gray-100 flex-1" /><span className="text-xs text-gray-400">o con tu cuenta</span><div className="h-px bg-gray-100 flex-1" />
+          </div>
           <div className="space-y-4">
             <Field label="Email">
               <TextInput value={form.email} onChange={f("email")} type="email" placeholder="tu@email.com" />
@@ -2128,6 +2148,16 @@ export default function App() {
     </div>
   );
   if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
+  if (!profile) return (
+    <div className="min-h-screen flex items-center justify-center bg-emerald-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl p-8 max-w-sm text-center space-y-3">
+        <div className="text-5xl">🔒</div>
+        <h2 className="font-bold text-gray-800 text-lg">Cuenta sin acceso todavía</h2>
+        <p className="text-sm text-gray-500">Entraste con <strong>{user.email}</strong>, pero todavía no tenés permisos asignados en RecetApp. Pedile a un administrador que te dé de alta desde la pestaña Usuarios.</p>
+        <button onClick={logout} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">Cerrar sesión</button>
+      </div>
+    </div>
+  );
 
   const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet", custom: "violet" };
   const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial", custom: "Personalizado" };
