@@ -1,5 +1,5 @@
 /* eslint-disable no-restricted-globals */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
@@ -8,6 +8,9 @@ const SUPABASE_KEY  = process.env.REACT_APP_SUPABASE_ANON_KEY;
 const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── CALCULATIONS ─────────────────────────────────────────────────────────────
+function normalizeName(s) {
+  return (s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
 function unitCost(ing) {
   const base = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
   return ing.waste_pct > 0 ? base / (1 - ing.waste_pct / 100) : base;
@@ -958,17 +961,159 @@ function QuickAddIngredientModal({ onClose, onSave }) {
   );
 }
 
+function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
+  const groups = useMemo(() => {
+    const map = {};
+    ingredients.forEach(i => {
+      const key = normalizeName(i.name);
+      if (!map[key]) map[key] = [];
+      map[key].push(i);
+    });
+    return Object.values(map).filter(g => g.length > 1);
+  }, [ingredients]);
+
+  const [keepMap, setKeepMap] = useState(() => {
+    const m = {};
+    groups.forEach((g, idx) => {
+      const withPrice = g.find(i => i.buy_price > 0);
+      m[idx] = (withPrice || g[0]).id;
+    });
+    return m;
+  });
+  const [merging, setMerging] = useState(false);
+  const [done, setDone]       = useState(0);
+
+  const mergeAll = async () => {
+    setMerging(true);
+    let updated = [...ingredients];
+    for (let idx = 0; idx < groups.length; idx++) {
+      const group  = groups[idx];
+      const keepId = keepMap[idx];
+      const dropIds = group.filter(i => i.id !== keepId).map(i => i.id);
+      if (dropIds.length === 0) { setDone(d => d + 1); continue; }
+      for (const dropId of dropIds) {
+        await supabase.from("recipe_ingredients").update({ ingredient_id: keepId }).eq("ingredient_id", dropId);
+      }
+      await supabase.from("ingredients").delete().in("id", dropIds);
+      updated = updated.filter(i => !dropIds.includes(i.id));
+      setDone(d => d + 1);
+    }
+    await logActivity(profile, "merge", "ingredientes", groups.length + " grupo(s) fusionados");
+    setMerging(false);
+    onMerged(updated);
+    onClose();
+  };
+
+  return (
+    <Modal title="Fusionar ingredientes duplicados" onClose={onClose} wide>
+      {groups.length === 0 ? (
+        <div className="text-center py-8 text-gray-400">
+          <div className="text-4xl mb-2">✅</div>
+          <p>No se encontraron nombres duplicados.</p>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <p className="text-sm text-gray-500">
+            Se encontraron {groups.length} grupo{groups.length !== 1 ? "s" : ""} de ingredientes con el mismo nombre.
+            Elegí cuál mantener en cada uno — el resto se borra y las recetas que los usaban pasan a usar el que elegiste.
+          </p>
+          <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
+            {groups.map((group, idx) => (
+              <div key={idx} className="border border-gray-100 rounded-xl p-4">
+                <p className="font-semibold text-gray-700 mb-2">{group[0].name}</p>
+                <div className="space-y-1.5">
+                  {group.map(ing => (
+                    <label key={ing.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input type="radio" name={`grp-${idx}`} checked={keepMap[idx] === ing.id}
+                        onChange={() => setKeepMap(p => ({ ...p, [idx]: ing.id }))}
+                        className="accent-emerald-500" />
+                      <span className="text-gray-700">
+                        {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-3 justify-end">
+            <Btn variant="secondary" onClick={onClose} disabled={merging}>Cancelar</Btn>
+            <Btn onClick={mergeAll} disabled={merging}>
+              {merging ? `Fusionando... (${done}/${groups.length})` : `Fusionar ${groups.length} grupo${groups.length !== 1 ? "s" : ""}`}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function IngredientsTab({ ingredients, setIngredients, profile }) {
   const canEdit = canEditTabPerms(profile, "ingredients");
   const [modal, setModal]   = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm]     = useState({});
   const [saving, setSaving] = useState(false);
+  const [onlyNoPrice, setOnlyNoPrice] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchForm, setBatchForm]   = useState({ category:"", unit:"", waste_pct:"" });
+  const [batchApply, setBatchApply] = useState({ category:false, unit:false, waste_pct:false });
+  const [batchSaving, setBatchSaving] = useState(false);
+
+  const noPriceCount = ingredients.filter(i => !i.buy_price || i.buy_price === 0).length;
 
   const filtered = ingredients.filter(i =>
-    i.name.toLowerCase().includes(search.toLowerCase()) ||
-    (i.category || "").toLowerCase().includes(search.toLowerCase())
+    (i.name.toLowerCase().includes(search.toLowerCase()) ||
+     (i.category || "").toLowerCase().includes(search.toLowerCase())) &&
+    (!onlyNoPrice || !i.buy_price || i.buy_price === 0)
   );
+
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const allFilteredSelected = filtered.length > 0 && filtered.every(i => selectedIds.has(i.id));
+  const toggleSelectAllFiltered = () => setSelectedIds(prev => {
+    if (allFilteredSelected) {
+      const next = new Set(prev);
+      filtered.forEach(i => next.delete(i.id));
+      return next;
+    }
+    const next = new Set(prev);
+    filtered.forEach(i => next.add(i.id));
+    return next;
+  });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const saveBatchEdit = async () => {
+    setBatchSaving(true);
+    const patch = {};
+    if (batchApply.category && batchForm.category) patch.category = batchForm.category;
+    if (batchApply.unit && batchForm.unit) patch.unit = batchForm.unit;
+    if (batchApply.waste_pct && batchForm.waste_pct !== "") patch.waste_pct = +batchForm.waste_pct;
+    const ids = [...selectedIds];
+    if (Object.keys(patch).length === 0 || ids.length === 0) { setBatchSaving(false); setModal(null); return; }
+    const { data, error } = await supabase.from("ingredients").update(patch).in("id", ids).select();
+    if (!error && data) {
+      setIngredients(prev => prev.map(i => data.find(d => d.id === i.id) || i));
+      await logActivity(profile, "update", "ingredientes", ids.length + " ingredientes (edición masiva)");
+    }
+    setBatchSaving(false);
+    setModal(null);
+    setBatchForm({ category:"", unit:"", waste_pct:"" });
+    setBatchApply({ category:false, unit:false, waste_pct:false });
+    clearSelection();
+  };
+
+  const deleteBatch = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    await supabase.from("ingredients").delete().in("id", ids);
+    setIngredients(prev => prev.filter(i => !ids.includes(i.id)));
+    await logActivity(profile, "delete", "ingredientes", ids.length + " ingredientes (borrado masivo)");
+    clearSelection();
+  };
 
   const openAdd  = () => { setForm({ name:"", category:"", unit:"kg", buy_price:"", buy_qty:"1", waste_pct:"0" }); setModal("form"); };
   const openEdit = (ing) => { setForm({...ing, buy_price: ing.buy_price+"", buy_qty: ing.buy_qty+"", waste_pct: ing.waste_pct+""}); setModal("form"); };
@@ -1016,18 +1161,39 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ingrediente o categoría..."
-               className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-1 min-w-48">
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ingrediente o categoría..."
+                 className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          <button onClick={() => setOnlyNoPrice(v => !v)}
+            className={`flex-shrink-0 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${onlyNoPrice ? "bg-rose-500 border-rose-500 text-white" : "bg-white border-gray-200 text-rose-500 hover:bg-rose-50"}`}>
+            Sin precio ({noPriceCount})
+          </button>
+        </div>
         {canEdit && <div className="flex gap-2">
+            <Btn variant="secondary" onClick={() => setModal("merge")}>🔗 Fusionar duplicados</Btn>
             <Btn variant="secondary" onClick={() => setModal("import")}>⬆️ Importar CSV</Btn>
             <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
           </div>}
       </div>
+      {canEdit && selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 mb-3 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2.5 flex-wrap">
+          <span className="text-sm font-semibold text-emerald-700">{selectedIds.size} seleccionados</span>
+          <button onClick={() => setModal("batchEdit")} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">✏️ Editar en lote</button>
+          <button onClick={deleteBatch} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>
+          <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
+        </div>
+      )}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
         <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-100">
+              {canEdit && (
+                <th className="px-4 py-3 w-8">
+                  <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAllFiltered}
+                    className="w-4 h-4 accent-emerald-500" />
+                </th>
+              )}
               {["Ingrediente","Categoría","Unidad","Precio compra","Cant.","Merma %","Costo neto/u", canEdit ? "" : null].filter(Boolean).map(h => (
                 <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
               ))}
@@ -1035,11 +1201,17 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
           </thead>
           <tbody>
             {filtered.map((ing, idx) => (
-              <tr key={ing.id} className={`border-b border-gray-50 hover:bg-emerald-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"}`}>
+              <tr key={ing.id} className={`border-b border-gray-50 hover:bg-emerald-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(ing.id) ? "bg-emerald-50/60" : ""}`}>
+                {canEdit && (
+                  <td className="px-4 py-3">
+                    <input type="checkbox" checked={selectedIds.has(ing.id)} onChange={() => toggleSelect(ing.id)}
+                      className="w-4 h-4 accent-emerald-500" />
+                  </td>
+                )}
                 <td className="px-4 py-3 font-medium text-gray-800">{ing.name}</td>
                 <td className="px-4 py-3"><Pill color={catColors[ing.category] || "sky"}>{ing.category}</Pill></td>
                 <td className="px-4 py-3 text-gray-500">{ing.unit}</td>
-                <td className="px-4 py-3 text-gray-700">${ing.buy_price?.toLocaleString("es-AR")}</td>
+                <td className="px-4 py-3 text-gray-700">{ing.buy_price ? `$${ing.buy_price.toLocaleString("es-AR")}` : <span className="text-rose-400 font-medium">Sin precio</span>}</td>
                 <td className="px-4 py-3 text-gray-500">{ing.buy_qty}</td>
                 <td className="px-4 py-3">{ing.waste_pct > 0 ? <Pill color="rose">{ing.waste_pct}%</Pill> : <span className="text-gray-300">—</span>}</td>
                 <td className="px-4 py-3 font-semibold text-emerald-700">${unitCost(ing).toFixed(4)}</td>
@@ -1086,6 +1258,39 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
             <Btn onClick={saveIng} disabled={saving}>{saving ? "Guardando..." : "Guardar"}</Btn>
           </div>
         </Modal>
+      )}
+      {modal === "batchEdit" && (
+        <Modal title={`Editar ${selectedIds.size} ingredientes`} onClose={() => setModal(null)}>
+          <p className="text-xs text-gray-400 mb-4">Tildá el campo que querés cambiar. Solo se van a modificar los campos tildados; el resto queda como estaba.</p>
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <input type="checkbox" checked={batchApply.category} onChange={e => setBatchApply(p => ({...p, category: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <div className="flex-1"><Field label="Categoría"><TextInput value={batchForm.category} disabled={!batchApply.category} onChange={e => setBatchForm(p=>({...p, category: e.target.value}))} placeholder="Ej: Secos" /></Field></div>
+            </div>
+            <div className="flex items-center gap-3">
+              <input type="checkbox" checked={batchApply.unit} onChange={e => setBatchApply(p => ({...p, unit: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <div className="flex-1"><Field label="Unidad"><TextInput value={batchForm.unit} disabled={!batchApply.unit} onChange={e => setBatchForm(p=>({...p, unit: e.target.value}))} placeholder="kg, lt, u, ml" /></Field></div>
+            </div>
+            <div className="flex items-center gap-3">
+              <input type="checkbox" checked={batchApply.waste_pct} onChange={e => setBatchApply(p => ({...p, waste_pct: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <div className="flex-1"><Field label="% Merma"><TextInput value={batchForm.waste_pct} disabled={!batchApply.waste_pct} onChange={e => setBatchForm(p=>({...p, waste_pct: e.target.value}))} type="number" min="0" max="100" step="0.1" suffix="%" /></Field></div>
+            </div>
+          </div>
+          <div className="flex gap-3 mt-5 justify-end">
+            <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
+            <Btn onClick={saveBatchEdit} disabled={batchSaving || !(batchApply.category || batchApply.unit || batchApply.waste_pct)}>
+              {batchSaving ? "Guardando..." : `Aplicar a ${selectedIds.size} ingredientes`}
+            </Btn>
+          </div>
+        </Modal>
+      )}
+      {modal === "merge" && (
+        <MergeDuplicatesModal
+          ingredients={ingredients}
+          onClose={() => setModal(null)}
+          onMerged={(updatedIngredients) => { setIngredients(updatedIngredients); }}
+          profile={profile}
+        />
       )}
       {modal === "import" && (
         <ImportCSVModal onClose={() => setModal(null)} onImport={async (rows) => {
@@ -1223,6 +1428,16 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     setForm({ ...r, portions: r.portions+"", profit_pct: r.profit_pct+"" });
     setModal("form");
   };
+  const openDuplicate = r => {
+    setForm({
+      name: r.name + " (copia)",
+      category: r.category,
+      portions: r.portions + "",
+      profit_pct: r.profit_pct + "",
+      recipe_ingredients: (r.recipe_ingredients || []).map(ri => ({ ingredient_id: String(ri.ingredient_id), qty: ri.qty + "" })),
+    });
+    setModal("form");
+  };
 
   const saveRecipe = async () => {
     setSaving(true);
@@ -1343,6 +1558,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
               {canEdit && (
                 <div className="flex gap-2">
                   <button onClick={() => openEdit(recipe)} className="bg-white/20 hover:bg-white/30 text-white text-sm px-3 py-1.5 rounded-lg">✏️ Editar</button>
+                  <button onClick={() => openDuplicate(recipe)} title="Duplicar receta" className="bg-white/20 hover:bg-white/30 text-white text-sm px-3 py-1.5 rounded-lg">📄 Duplicar</button>
                   <button onClick={() => del(recipe.id, recipe.name)} className="bg-white/20 hover:bg-rose-500 text-white text-sm px-3 py-1.5 rounded-lg">🗑</button>
                 </div>
               )}
@@ -1513,13 +1729,36 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 
 
 // ─── COMANDA TAB (MOZO) ───────────────────────────────────────────────────────
+const COMANDA_STORAGE_KEY = "recetapp_comanda_cart";
+const COMANDA_PHONE_KEY   = "recetapp_comanda_phone";
+
 function ComandaTab({ recipes, ingredients, business }) {
-  const [items, setItems] = useState({}); // { recipeId: qty }
+  const [items, setItems] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COMANDA_STORAGE_KEY) || "{}");
+      return saved && typeof saved === "object" ? saved : {};
+    } catch { return {}; }
+  }); // { recipeId: qty }
+  const [countryCode, setCountryCode] = useState("54");
+  const [phone, setPhone] = useState(() => {
+    try { return localStorage.getItem(COMANDA_PHONE_KEY) || ""; } catch { return ""; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(COMANDA_STORAGE_KEY, JSON.stringify(items)); } catch {}
+  }, [items]);
+  useEffect(() => {
+    try { localStorage.setItem(COMANDA_PHONE_KEY, phone); } catch {}
+  }, [phone]);
 
   const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
   const setQty = (id, val) => {
     const n = Math.max(0, parseInt(val) || 0);
     setItems(p => ({ ...p, [id]: n }));
+  };
+  const clearCart = () => {
+    setItems({});
+    try { localStorage.removeItem(COMANDA_STORAGE_KEY); } catch {}
   };
   const selected = recipes.filter(r => (items[r.id] || 0) > 0);
   const total = selected.reduce((s, r) => {
@@ -1536,6 +1775,11 @@ function ComandaTab({ recipes, ingredients, business }) {
     txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
     return encodeURIComponent(txt);
   };
+  const cleanPhone = phone.replace(/\D/g, "");
+  const cleanCode  = countryCode.replace(/\D/g, "");
+  const waLink = cleanPhone
+    ? `https://wa.me/${cleanCode}${cleanPhone}?text=${whatsappText()}`
+    : `https://wa.me/?text=${whatsappText()}`;
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
@@ -1587,12 +1831,22 @@ function ComandaTab({ recipes, ingredients, business }) {
             <span>TOTAL</span>
             <span className="text-emerald-600">${total.toLocaleString("es-AR")}</span>
           </div>
-          <div className="flex gap-3 pt-1">
-            <a href={`https://wa.me/?text=${whatsappText()}`} target="_blank" rel="noreferrer"
+          <div className="flex gap-2 items-center pt-1">
+            <div className="w-16">
+              <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
+                placeholder="Cód." title="Código de país (ej: 54 Argentina)"
+                className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+            </div>
+            <input value={phone} onChange={e => setPhone(e.target.value)}
+              placeholder="N° de WhatsApp (opcional)" type="tel"
+              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          </div>
+          <div className="flex gap-3">
+            <a href={waLink} target="_blank" rel="noreferrer"
               className="flex-1 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 text-center transition-colors">
-              📲 Compartir por WhatsApp
+              📲 {cleanPhone ? "Enviar por WhatsApp" : "Compartir por WhatsApp"}
             </a>
-            <button onClick={() => setItems({})}
+            <button onClick={clearCart}
               className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
               Limpiar
             </button>
@@ -1604,9 +1858,155 @@ function ComandaTab({ recipes, ingredients, business }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ recipes, ingredients, business }) {
+function buildShoppingList(selectedRecipes, ingredients) {
+  const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
+  const totals = {};
+  selectedRecipes.forEach(r => {
+    (r.recipe_ingredients || []).forEach(ri => {
+      totals[ri.ingredient_id] = (totals[ri.ingredient_id] || 0) + (ri.qty || 0);
+    });
+  });
+  const rows = Object.entries(totals).map(([id, qty]) => {
+    const ing = ingMap[+id];
+    if (!ing) return null;
+    const isFractionable = ing.unit === "kg" || ing.unit === "lt" || ing.unit === "g" || ing.unit === "ml";
+    const finalQty  = isFractionable ? qty : Math.ceil(qty);
+    const unitPrice = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
+    return { id: ing.id, name: ing.name, category: ing.category || "Sin categoría", unit: ing.unit, qty: finalQty, unitPrice, total: unitPrice * finalQty };
+  }).filter(Boolean);
+  rows.sort((a, b) => a.category.localeCompare(b.category, "es") || a.name.localeCompare(b.name, "es"));
+  return rows;
+}
+
+function ShoppingListModal({ selectedRecipes, ingredients, onClose }) {
+  const rows = useMemo(() => buildShoppingList(selectedRecipes, ingredients), [selectedRecipes, ingredients]);
+  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
+  const grouped = useMemo(() => {
+    const g = {};
+    rows.forEach(r => { (g[r.category] = g[r.category] || []).push(r); });
+    return Object.entries(g);
+  }, [rows]);
+
+  const printList = () => {
+    const win = window.open("", "_blank");
+    let html = `<html><head><title>Lista de compras</title><meta charset="utf-8"/>
+      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222}h1{color:#065f46}
+      table{width:100%;border-collapse:collapse;margin-bottom:18px}th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
+      th{background:#f0fdf4;color:#065f46;text-transform:uppercase;font-size:11px}
+      h2{font-size:14px;color:#065f46;margin:18px 0 4px}.tot{font-weight:bold;text-align:right}</style></head><body>
+      <h1>🍽️ RecetApp — Lista de compras</h1><p>${new Date().toLocaleDateString("es-AR")} · ${selectedRecipes.length} receta(s)</p>`;
+    grouped.forEach(([cat, items]) => {
+      html += `<h2>${cat}</h2><table><thead><tr><th>Ingrediente</th><th>Cant.</th><th>Unidad</th><th>P. unitario</th><th>Total</th></tr></thead><tbody>`;
+      items.forEach(it => {
+        html += `<tr><td>${it.name}</td><td>${it.unit === "kg" || it.unit === "lt" ? it.qty.toFixed(3) : it.qty}</td><td>${it.unit}</td><td>$${it.unitPrice.toFixed(2)}</td><td>$${it.total.toFixed(2)}</td></tr>`;
+      });
+      html += `</tbody></table>`;
+    });
+    html += `<p class="tot">TOTAL GENERAL: $${grandTotal.toLocaleString("es-AR")}</p></body></html>`;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const downloadListCSV = () => {
+    const S = ";";
+    const n = (v) => v.toString().replace(".", ",");
+    let csv = "sep=;\nLISTA DE COMPRAS\n\n";
+    csv += `Categoría${S}Ingrediente${S}Cantidad${S}Unidad${S}Precio unitario${S}Total\n`;
+    rows.forEach(r => { csv += `${r.category}${S}${r.name}${S}${n(r.qty)}${S}${r.unit}${S}${n(r.unitPrice.toFixed(2))}${S}${n(r.total.toFixed(2))}\n`; });
+    csv += `\nTOTAL GENERAL${S}${S}${S}${S}${S}${n(grandTotal.toFixed(2))}\n`;
+    downloadCSV(csv, "RecetApp_ListaDeCompras.csv");
+  };
+
+  return (
+    <Modal title="🛒 Lista de compras" onClose={onClose} wide>
+      <div className="space-y-5">
+        <p className="text-sm text-gray-500">Suma de ingredientes de {selectedRecipes.length} receta(s) seleccionada(s), agrupados por categoría.</p>
+        <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
+          {grouped.map(([cat, items]) => (
+            <div key={cat}>
+              <h4 className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1.5">{cat}</h4>
+              <table className="w-full text-sm">
+                <tbody>
+                  {items.map(it => (
+                    <tr key={it.id} className="border-b border-gray-50">
+                      <td className="py-1.5 text-gray-800">{it.name}</td>
+                      <td className="py-1.5 text-gray-500 text-right w-24">{it.unit === "kg" || it.unit === "lt" ? it.qty.toFixed(3) : it.qty} {it.unit}</td>
+                      <td className="py-1.5 text-gray-500 text-right w-20">${it.unitPrice.toFixed(2)}</td>
+                      <td className="py-1.5 font-medium text-gray-800 text-right w-24">${it.total.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="text-center text-gray-400 py-6">Las recetas seleccionadas no tienen ingredientes cargados.</p>}
+        </div>
+        <div className="flex justify-between items-center border-t border-gray-100 pt-3">
+          <span className="font-bold text-gray-700">TOTAL GENERAL</span>
+          <span className="font-bold text-emerald-600 text-lg">${grandTotal.toLocaleString("es-AR")}</span>
+        </div>
+        <div className="flex gap-3 justify-end">
+          <Btn variant="secondary" onClick={downloadListCSV}>⬇️ CSV</Btn>
+          <Btn variant="secondary" onClick={printList}>🖨️ Imprimir</Btn>
+          <Btn onClick={onClose}>Cerrar</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function printRecipes(selectedRecipes, ingredients, business) {
+  const win = window.open("", "_blank");
+  let html = `<html><head><title>Recetas</title><meta charset="utf-8"/>
+    <style>body{font-family:Arial,sans-serif;padding:24px;color:#222}h1{color:#065f46}
+    .recipe{page-break-inside:avoid;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px}
+    .recipe h2{color:#065f46;margin:0 0 4px}.meta{color:#888;font-size:12px;margin-bottom:10px}
+    table{width:100%;border-collapse:collapse;margin-bottom:10px}th,td{padding:5px 6px;border-bottom:1px solid #eee;text-align:left;font-size:12px}
+    th{color:#065f46;text-transform:uppercase;font-size:10px}
+    .price{background:#059669;color:#fff;padding:8px 12px;border-radius:8px;font-weight:bold;text-align:right}</style></head><body>
+    <h1>🍽️ RecetApp — Recetas</h1><p style="color:#888">${new Date().toLocaleDateString("es-AR")}</p>`;
+  selectedRecipes.forEach(r => {
+    const c = calcRecipe(r, ingredients, business);
+    html += `<div class="recipe"><h2>${r.name}</h2><p class="meta">${r.category || ""} · ${r.portions} porciones · ${r.profit_pct}% ganancia</p>
+      <table><thead><tr><th>Ingrediente</th><th>Unidad</th><th>Cantidad</th><th>Subtotal</th></tr></thead><tbody>`;
+    c.lines.forEach(l => { html += `<tr><td>${l.ing.name}</td><td>${l.ing.unit}</td><td>${l.qty.toFixed(3)}</td><td>$${l.subtotal.toFixed(2)}</td></tr>`; });
+    html += `</tbody></table><div class="price">Precio de venta: $${c.roundedPrice.toLocaleString("es-AR")}</div></div>`;
+  });
+  html += `</body></html>`;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  win.print();
+}
+
+function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
+  const canEdit = canEditTabPerms(profile, "dashboard") || profile?.role === "admin";
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showShoppingList, setShowShoppingList] = useState(false);
+
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const allSelected = recipes.length > 0 && recipes.every(r => selectedIds.has(r.id));
+  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(recipes.map(r => r.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+  const selectedRecipes = recipes.filter(r => selectedIds.has(r.id));
+
+  const deleteSelected = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    await supabase.from("recipes").delete().in("id", ids);
+    setRecipes(prev => prev.filter(r => !ids.includes(r.id)));
+    await logActivity(profile, "delete", "recetas", ids.length + " recetas (borrado masivo)");
+    clearSelection();
+  };
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -1615,6 +2015,15 @@ function Dashboard({ recipes, ingredients, business }) {
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
+      {canEdit && selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2.5 flex-wrap">
+          <span className="text-sm font-semibold text-emerald-700">{selectedIds.size} seleccionadas</span>
+          <button onClick={() => setShowShoppingList(true)} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">🛒 Lista de compras</button>
+          <button onClick={() => printRecipes(selectedRecipes, ingredients, business)} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">🖨️ Imprimir</button>
+          <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
+          <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
+        </div>
+      )}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h3 className="font-semibold text-gray-700">Resumen de recetas</h3>
@@ -1624,6 +2033,11 @@ function Dashboard({ recipes, ingredients, business }) {
           <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
+                {canEdit && (
+                  <th className="px-4 py-3 w-8">
+                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4 accent-emerald-500" />
+                  </th>
+                )}
                 {["Receta","Porciones","Costo/porción","Precio redondeado","Ganancia %"].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                 ))}
@@ -1633,7 +2047,12 @@ function Dashboard({ recipes, ingredients, business }) {
               {recipes.map((r, idx) => {
                 const c = calcRecipe(r, ingredients, business);
                 return (
-                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"}`}>
+                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(r.id) ? "bg-emerald-50/60" : ""}`}>
+                    {canEdit && (
+                      <td className="px-4 py-3">
+                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-emerald-500" />
+                      </td>
+                    )}
                     <td className="px-4 py-3 font-medium text-gray-800">{r.name}</td>
                     <td className="px-4 py-3 text-gray-500">{r.portions}</td>
                     <td className="px-4 py-3 text-rose-600 font-medium">${c.totalCost.toFixed(2)}</td>
@@ -1651,6 +2070,9 @@ function Dashboard({ recipes, ingredients, business }) {
           {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
         </div>
       </div>
+      {showShoppingList && (
+        <ShoppingListModal selectedRecipes={selectedRecipes} ingredients={ingredients} onClose={() => setShowShoppingList(false)} />
+      )}
     </div>
   );
 }
@@ -1769,7 +2191,7 @@ export default function App() {
         </div>
       </header>
       <main className="max-w-7xl mx-auto px-4 py-5">
-        {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} business={business} />}
+        {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile} />}
         {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
         {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} profile={profile} />}
         {tab === "business"    && <BusinessTab business={business} setBusiness={setBusiness} profile={profile} />}
