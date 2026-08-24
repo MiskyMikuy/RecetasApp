@@ -170,20 +170,20 @@ function exportBusinessCSV(business) {
 }
 
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
-function Pill({ children, color = "emerald" }) {
+function Pill({ children, color = "misky" }) {
   const map = {
-    emerald: "bg-emerald-100 text-emerald-700",
+    misky: "bg-misky-100 text-misky-700",
     amber:   "bg-amber-100 text-amber-700",
     rose:    "bg-rose-100 text-rose-700",
     sky:     "bg-sky-100 text-sky-700",
     violet:  "bg-violet-100 text-violet-700",
     gray:    "bg-gray-100 text-gray-600",
   };
-  return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${map[color] || map.emerald}`}>{children}</span>;
+  return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${map[color] || map.misky}`}>{children}</span>;
 }
-function StatCard({ label, value, sub, accent = "emerald" }) {
+function StatCard({ label, value, sub, accent = "misky" }) {
   const map = {
-    emerald: "border-l-emerald-500 bg-emerald-50",
+    misky: "border-l-misky-500 bg-misky-50",
     amber:   "border-l-amber-500 bg-amber-50",
     rose:    "border-l-rose-500 bg-rose-50",
     sky:     "border-l-sky-500 bg-sky-50",
@@ -223,7 +223,7 @@ function TextInput({ value, onChange, type = "text", placeholder, suffix, step, 
       <input
         type={type} value={value} onChange={onChange}
         placeholder={placeholder} step={step} min={min} max={max} disabled={disabled}
-        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400 bg-white disabled:bg-gray-50 disabled:text-gray-400"
       />
       {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">{suffix}</span>}
     </div>
@@ -231,7 +231,7 @@ function TextInput({ value, onChange, type = "text", placeholder, suffix, step, 
 }
 function Btn({ children, onClick, variant = "primary", size = "md", disabled = false, className = "" }) {
   const v = {
-    primary:   "bg-emerald-600 hover:bg-emerald-700 text-white",
+    primary:   "bg-misky-600 hover:bg-misky-700 text-white",
     secondary: "bg-white border border-gray-200 hover:bg-gray-50 text-gray-700",
     danger:    "bg-rose-500 hover:bg-rose-600 text-white",
     ghost:     "hover:bg-gray-100 text-gray-600",
@@ -266,7 +266,7 @@ function SetNewPasswordScreen({ onDone }) {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4"
-         style={{ background: "linear-gradient(135deg,#064e3b 0%,#065f46 50%,#047857 100%)" }}>
+         style={{ background: "linear-gradient(135deg,#351740 0%,#612577 55%,#8C1117 100%)" }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-6xl mb-3">🔑</div>
@@ -319,12 +319,12 @@ function LoginScreen({ onLogin }) {
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   return (
     <div className="min-h-screen flex items-center justify-center p-4"
-         style={{ background: "linear-gradient(135deg,#064e3b 0%,#065f46 50%,#047857 100%)" }}>
+         style={{ background: "linear-gradient(135deg,#351740 0%,#612577 55%,#8C1117 100%)" }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-6xl mb-3">🍽️</div>
           <h1 className="text-3xl font-bold text-white tracking-tight">RecetApp</h1>
-          <p className="text-emerald-200 text-sm mt-1">Costeo inteligente de recetas</p>
+          <p className="text-misky-200 text-sm mt-1">Costeo inteligente de recetas</p>
         </div>
         <div className="bg-white rounded-2xl shadow-2xl p-7">
           <button onClick={handleGoogle} disabled={googleLoading}
@@ -393,7 +393,7 @@ const PRESETS = {
     }
   },
   editor_total: {
-    label: "✏️ Editor total", color: "emerald",
+    label: "✏️ Editor total", color: "misky",
     perms: {
       dashboard:   makeGroups("dashboard", true, true),
       recipes:     makeGroups("recipes", true, true),
@@ -607,7 +607,7 @@ function AdminPanel({ profile }) {
     setPerm(section, action, val);
   };
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", custom: "violet" };
+  const roleColor = { admin: "rose", editor: "misky", viewer: "sky", custom: "violet" };
   const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", custom: "Personalizado",
     viewer_partial: "Vista parcial" };
 
@@ -637,7 +637,7 @@ function AdminPanel({ profile }) {
       <div className="flex gap-2 border-b border-gray-200 pb-1">
         {[["users","👥 Usuarios"],["logs","📋 Actividad"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${tab === id ? "bg-white border border-b-white border-gray-200 text-emerald-700 -mb-px" : "text-gray-500 hover:text-gray-700"}`}>
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${tab === id ? "bg-white border border-b-white border-gray-200 text-misky-700 -mb-px" : "text-gray-500 hover:text-gray-700"}`}>
             {label}
           </button>
         ))}
@@ -682,7 +682,7 @@ function AdminPanel({ profile }) {
                     <td className="px-4 py-3 text-gray-400 text-xs">{new Date(u.created_at).toLocaleDateString("es-AR")}</td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
-                        <button onClick={() => openEdit(u)} className="text-gray-400 hover:text-emerald-600 transition-colors">✏️</button>
+                        <button onClick={() => openEdit(u)} className="text-gray-400 hover:text-misky-600 transition-colors">✏️</button>
                         {u.id !== profile.id && (
                           <button onClick={() => deleteUser(u)} className="text-gray-400 hover:text-rose-500 transition-colors">🗑</button>
                         )}
@@ -729,7 +729,7 @@ function AdminPanel({ profile }) {
                   </td>
                   <td className="px-4 py-2 font-medium text-gray-700">{l.username}</td>
                   <td className="px-4 py-2">
-                    <Pill color={l.action==="delete"?"rose":l.action==="create"?"emerald":"sky"}>{l.action}</Pill>
+                    <Pill color={l.action==="delete"?"rose":l.action==="create"?"misky":"sky"}>{l.action}</Pill>
                   </td>
                   <td className="px-4 py-2 text-gray-500">{l.entity}</td>
                   <td className="px-4 py-2 text-gray-500">{l.detail}</td>
@@ -776,7 +776,7 @@ function AdminPanel({ profile }) {
                     onClick={() => setForm(p => ({ ...p, role: key === "admin" ? "admin" : "custom", permissions: preset.perms }))}
                     className={`text-xs px-2 py-1 rounded-lg border transition-colors ${
                       JSON.stringify(form.permissions) === JSON.stringify(preset.perms)
-                        ? "bg-emerald-100 border-emerald-400 text-emerald-700 font-semibold"
+                        ? "bg-misky-100 border-misky-400 text-misky-700 font-semibold"
                         : "border-gray-200 text-gray-500 hover:bg-gray-100"
                     }`}>
                     {preset.label}
@@ -785,7 +785,7 @@ function AdminPanel({ profile }) {
               </div>
               {/* Edición manual por grupos */}
               <details className="group">
-                <summary className="cursor-pointer text-xs text-emerald-600 font-medium hover:text-emerald-700">
+                <summary className="cursor-pointer text-xs text-misky-600 font-medium hover:text-misky-700">
                   ✏️ Personalizar manualmente
                 </summary>
                 <div className="mt-3 space-y-3">
@@ -845,7 +845,7 @@ function AdminPanel({ profile }) {
                                   }
                                 }));
                               }}
-                              className="w-4 h-4 accent-emerald-500 disabled:opacity-30" />
+                              className="w-4 h-4 accent-misky-500 disabled:opacity-30" />
                           </div>
                         </div>
                       ))}
@@ -855,7 +855,7 @@ function AdminPanel({ profile }) {
               </details>
             </div>
 
-            {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
+            {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-misky-50 text-misky-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
             <div className="flex gap-3 justify-end">
               <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
               <Btn onClick={modal === "newUser" ? createUser : updateUser}>
@@ -922,11 +922,11 @@ function ImportCSVModal({ onClose, onImport }) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a"); a.href=url; a.download="plantilla_ingredientes.csv"; a.click();
             URL.revokeObjectURL(url);
-          }} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium underline">
+          }} className="text-sm text-misky-600 hover:text-misky-700 font-medium underline">
             ⬇️ Descargar plantilla CSV
           </button>
           <div onClick={() => fileRef.current.click()}
-            className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all">
+            className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-misky-400 hover:bg-misky-50/30 transition-all">
             <div className="text-4xl mb-2">📂</div>
             <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
             <p className="text-xs text-gray-400 mt-1">CSV separado por comas o punto y coma</p>
@@ -940,7 +940,7 @@ function ImportCSVModal({ onClose, onImport }) {
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg">
             <span>📄</span><span className="font-medium">{fileName}</span>
-            <span className="ml-auto text-emerald-600 font-semibold">{preview.length} ingredientes</span>
+            <span className="ml-auto text-misky-600 font-semibold">{preview.length} ingredientes</span>
           </div>
           <div className="overflow-x-auto max-h-64 rounded-xl border border-gray-100">
             <table className="w-full text-xs min-w-[480px]">
@@ -1006,9 +1006,9 @@ function QuickAddIngredientModal({ onClose, onSave }) {
         <Field label="Precio de compra ($)"><TextInput value={form.buy_price} onChange={f("buy_price")} type="number" min="0" step="0.01" /></Field>
         <Field label="Cantidad que comprás"><TextInput value={form.buy_qty} onChange={f("buy_qty")} type="number" min="0.001" step="0.001" /></Field>
         <Field label="% Merma"><TextInput value={form.waste_pct} onChange={f("waste_pct")} type="number" min="0" max="100" step="0.1" suffix="%" /></Field>
-        <div className="bg-emerald-50 rounded-xl p-4 flex flex-col justify-center">
-          <p className="text-xs text-emerald-600 font-medium mb-1">Costo neto x unidad</p>
-          <p className="text-2xl font-bold text-emerald-700">${previewCost()}</p>
+        <div className="bg-misky-50 rounded-xl p-4 flex flex-col justify-center">
+          <p className="text-xs text-misky-600 font-medium mb-1">Costo neto x unidad</p>
+          <p className="text-2xl font-bold text-misky-700">${previewCost()}</p>
         </div>
       </div>
       {form.unit && UNIT_GUIDE.find(g=>g.unit===form.unit) && (
@@ -1089,7 +1089,7 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
                     <label key={ing.id} className="flex items-center gap-2 text-sm cursor-pointer">
                       <input type="radio" name={`grp-${idx}`} checked={keepMap[idx] === ing.id}
                         onChange={() => setKeepMap(p => ({ ...p, [idx]: ing.id }))}
-                        className="accent-emerald-500" />
+                        className="accent-misky-500" />
                       <span className="text-gray-700">
                         {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
                       </span>
@@ -1214,7 +1214,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   };
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"emerald", Aceites:"violet", Dulces:"rose", Frutas:"emerald" };
+  const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"misky", Aceites:"violet", Dulces:"rose", Frutas:"misky" };
   const previewCost = () => {
     const qty = +form.buy_qty || 0; const price = +form.buy_price || 0; const waste = +form.waste_pct || 0;
     if (qty <= 0) return "0.0000";
@@ -1227,7 +1227,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-1 min-w-48">
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar ingrediente o categoría..."
-                 className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                 className="flex-1 min-w-48 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
           <button onClick={() => setOnlyNoPrice(v => !v)}
             className={`flex-shrink-0 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${onlyNoPrice ? "bg-rose-500 border-rose-500 text-white" : "bg-white border-gray-200 text-rose-500 hover:bg-rose-50"}`}>
             Sin precio ({noPriceCount})
@@ -1240,9 +1240,9 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
           </div>}
       </div>
       {canEdit && selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2.5 flex-wrap">
-          <span className="text-sm font-semibold text-emerald-700">{selectedIds.size} seleccionados</span>
-          <button onClick={() => setModal("batchEdit")} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">✏️ Editar en lote</button>
+        <div className="flex items-center gap-3 mb-3 bg-misky-50 border border-misky-100 rounded-xl px-4 py-2.5 flex-wrap">
+          <span className="text-sm font-semibold text-misky-700">{selectedIds.size} seleccionados</span>
+          <button onClick={() => setModal("batchEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote</button>
           <button onClick={deleteBatch} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>
           <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
         </div>
@@ -1254,7 +1254,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
               {canEdit && (
                 <th className="px-4 py-3 w-8">
                   <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAllFiltered}
-                    className="w-4 h-4 accent-emerald-500" />
+                    className="w-4 h-4 accent-misky-500" />
                 </th>
               )}
               {["Ingrediente","Categoría","Unidad","Precio compra","Cant.","Merma %","Costo neto/u", canEdit ? "" : null].filter(Boolean).map(h => (
@@ -1264,11 +1264,11 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
           </thead>
           <tbody>
             {filtered.map((ing, idx) => (
-              <tr key={ing.id} className={`border-b border-gray-50 hover:bg-emerald-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(ing.id) ? "bg-emerald-50/60" : ""}`}>
+              <tr key={ing.id} className={`border-b border-gray-50 hover:bg-misky-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(ing.id) ? "bg-misky-50/60" : ""}`}>
                 {canEdit && (
                   <td className="px-4 py-3">
                     <input type="checkbox" checked={selectedIds.has(ing.id)} onChange={() => toggleSelect(ing.id)}
-                      className="w-4 h-4 accent-emerald-500" />
+                      className="w-4 h-4 accent-misky-500" />
                   </td>
                 )}
                 <td className="px-4 py-3 font-medium text-gray-800">{ing.name}</td>
@@ -1277,11 +1277,11 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
                 <td className="px-4 py-3 text-gray-700">{ing.buy_price ? `$${ing.buy_price.toLocaleString("es-AR")}` : <span className="text-rose-400 font-medium">Sin precio</span>}</td>
                 <td className="px-4 py-3 text-gray-500">{ing.buy_qty}</td>
                 <td className="px-4 py-3">{ing.waste_pct > 0 ? <Pill color="rose">{ing.waste_pct}%</Pill> : <span className="text-gray-300">—</span>}</td>
-                <td className="px-4 py-3 font-semibold text-emerald-700">${unitCost(ing).toFixed(4)}</td>
+                <td className="px-4 py-3 font-semibold text-misky-700">${unitCost(ing).toFixed(4)}</td>
                 {canEdit && (
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
-                      <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-emerald-600">✏️</button>
+                      <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-misky-600">✏️</button>
                       <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>
                     </div>
                   </td>
@@ -1306,9 +1306,9 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
             <Field label="Precio de compra ($)"><TextInput value={form.buy_price || ""} onChange={f("buy_price")} type="number" min="0" step="0.01" /></Field>
             <Field label="Cantidad que comprás"><TextInput value={form.buy_qty || ""} onChange={f("buy_qty")} type="number" min="0.001" step="0.001" /></Field>
             <Field label="% Merma"><TextInput value={form.waste_pct || "0"} onChange={f("waste_pct")} type="number" min="0" max="100" step="0.1" suffix="%" /></Field>
-            <div className="bg-emerald-50 rounded-xl p-4 flex flex-col justify-center">
-              <p className="text-xs text-emerald-600 font-medium mb-1">Costo neto x unidad</p>
-              <p className="text-2xl font-bold text-emerald-700">${previewCost()}</p>
+            <div className="bg-misky-50 rounded-xl p-4 flex flex-col justify-center">
+              <p className="text-xs text-misky-600 font-medium mb-1">Costo neto x unidad</p>
+              <p className="text-2xl font-bold text-misky-700">${previewCost()}</p>
             </div>
           </div>
           {form.unit && UNIT_GUIDE.find(g => g.unit === form.unit) && (
@@ -1327,15 +1327,15 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
           <p className="text-xs text-gray-400 mb-4">Tildá el campo que querés cambiar. Solo se van a modificar los campos tildados; el resto queda como estaba.</p>
           <div className="space-y-4">
             <div className="flex items-center gap-3">
-              <input type="checkbox" checked={batchApply.category} onChange={e => setBatchApply(p => ({...p, category: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <input type="checkbox" checked={batchApply.category} onChange={e => setBatchApply(p => ({...p, category: e.target.checked}))} className="w-4 h-4 accent-misky-500" />
               <div className="flex-1"><Field label="Categoría"><TextInput value={batchForm.category} disabled={!batchApply.category} onChange={e => setBatchForm(p=>({...p, category: e.target.value}))} placeholder="Ej: Secos" /></Field></div>
             </div>
             <div className="flex items-center gap-3">
-              <input type="checkbox" checked={batchApply.unit} onChange={e => setBatchApply(p => ({...p, unit: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <input type="checkbox" checked={batchApply.unit} onChange={e => setBatchApply(p => ({...p, unit: e.target.checked}))} className="w-4 h-4 accent-misky-500" />
               <div className="flex-1"><Field label="Unidad"><TextInput value={batchForm.unit} disabled={!batchApply.unit} onChange={e => setBatchForm(p=>({...p, unit: e.target.value}))} placeholder="kg, lt, u, ml" /></Field></div>
             </div>
             <div className="flex items-center gap-3">
-              <input type="checkbox" checked={batchApply.waste_pct} onChange={e => setBatchApply(p => ({...p, waste_pct: e.target.checked}))} className="w-4 h-4 accent-emerald-500" />
+              <input type="checkbox" checked={batchApply.waste_pct} onChange={e => setBatchApply(p => ({...p, waste_pct: e.target.checked}))} className="w-4 h-4 accent-misky-500" />
               <div className="flex-1"><Field label="% Merma"><TextInput value={batchForm.waste_pct} disabled={!batchApply.waste_pct} onChange={e => setBatchForm(p=>({...p, waste_pct: e.target.value}))} type="number" min="0" max="100" step="0.1" suffix="%" /></Field></div>
             </div>
           </div>
@@ -1419,7 +1419,7 @@ function BusinessTab({ business, setBusiness, profile }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard label="Total costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="Unidades estimadas/mes" value={business.monthly_units} accent="sky" />
-        <StatCard label="Costo fijo x unidad" value={`$${cfUnit.toFixed(2)}`} sub="Aplicado a cada receta" accent="emerald" />
+        <StatCard label="Costo fijo x unidad" value={`$${cfUnit.toFixed(2)}`} sub="Aplicado a cada receta" accent="misky" />
       </div>
       {canSeeFijos && <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">🏢 Costos fijos mensuales</h3>
@@ -1427,17 +1427,17 @@ function BusinessTab({ business, setBusiness, profile }) {
           {(business.fixed_costs || []).map(c => (
             <div key={c.id} className="flex items-center gap-3">
               <input value={c.name} disabled={!canEdit} onChange={e => updateCost(c.id, "name", e.target.value)}
-                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:bg-gray-50" />
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400 disabled:bg-gray-50" />
               <div className="relative w-36">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
                 <input type="number" min="0" value={c.amount} disabled={!canEdit} onChange={e => updateCost(c.id, "amount", e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:bg-gray-50" />
+                  className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400 disabled:bg-gray-50" />
               </div>
               {canEdit && <button onClick={() => delCost(c.id)} className="text-gray-300 hover:text-rose-400 text-lg">🗑</button>}
             </div>
           ))}
         </div>
-        {canEdit && <button onClick={addCost} className="mt-3 text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>}
+        {canEdit && <button onClick={addCost} className="mt-3 text-sm text-misky-600 hover:text-misky-700 font-medium">+ Agregar línea</button>}
       </div>}
       {canSeeVars && <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h3 className="font-semibold text-gray-700 mb-4">📈 Producción y costos variables</h3>
@@ -1594,12 +1594,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           const c = calcRecipe(r, ingredients, business);
           return (
             <div key={r.id} onClick={() => setSelected(r.id)}
-              className={`bg-white rounded-xl border p-3 cursor-pointer transition-all hover:shadow-md ${selected === r.id ? "border-emerald-400 shadow-md" : "border-gray-100"}`}>
+              className={`bg-white rounded-xl border p-3 cursor-pointer transition-all hover:shadow-md ${selected === r.id ? "border-misky-400 shadow-md" : "border-gray-100"}`}>
               <p className="font-semibold text-gray-800 text-sm leading-tight">{r.name}</p>
               <p className="text-xs text-gray-400 mt-0.5">{r.category} · {r.portions} u.</p>
               <div className="flex justify-between items-center mt-2">
                 <span className="text-xs text-gray-400">Precio</span>
-                <span className="text-sm font-bold text-emerald-600">${c.roundedPrice.toLocaleString("es-AR")}</span>
+                <span className="text-sm font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</span>
               </div>
             </div>
           );
@@ -1613,10 +1613,10 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
       <div className="flex-1 min-w-0">
         {recipe && calc ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 px-6 py-5 flex items-start justify-between">
+            <div className="bg-gradient-to-r from-misky-700 to-misky-600 px-6 py-5 flex items-start justify-between">
               <div>
                 <h2 className="text-xl font-bold text-white">{recipe.name}</h2>
-                <p className="text-emerald-200 text-sm mt-1">{recipe.category} · {recipe.portions} porciones · {recipe.profit_pct}% ganancia</p>
+                <p className="text-misky-200 text-sm mt-1">{recipe.category} · {recipe.portions} porciones · {recipe.profit_pct}% ganancia</p>
               </div>
               {canEdit && (
                 <div className="flex gap-2">
@@ -1629,7 +1629,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
               {showCostos && <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`} accent="rose" />}
               {showPrecioSug && <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`} accent="amber" />}
-              {showPrecioRed && <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="emerald" />}
+              {showPrecioRed && <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="misky" />}
               {showGanancia && <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />}
             </div>
             {showIngredientes && <div className="px-5 pb-3">
@@ -1670,7 +1670,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 <span className="font-bold text-rose-700">COSTO TOTAL x porción</span>
                 <span className="font-bold text-rose-700">${calc.totalCost.toFixed(2)}</span>
               </div>}
-              {showPrecioRed && <div className="flex justify-between px-4 py-3.5 bg-emerald-600">
+              {showPrecioRed && <div className="flex justify-between px-4 py-3.5 bg-misky-600">
                 <span className="font-bold text-white text-base">PRECIO DE VENTA</span>
                 <span className="font-bold text-white text-xl">${calc.roundedPrice.toLocaleString("es-AR")}</span>
               </div>}
@@ -1710,7 +1710,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 <h4 className="text-sm font-semibold text-gray-700">Ingredientes</h4>
                 <div className="flex gap-3 items-center">
                   <button onClick={() => setShowUnitGuide(v => !v)} className="text-xs text-amber-600 hover:text-amber-700 font-medium">📐 Guía de unidades</button>
-                  <button onClick={addLine} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">+ Agregar línea</button>
+                  <button onClick={addLine} className="text-sm text-misky-600 hover:text-misky-700 font-medium">+ Agregar línea</button>
                 </div>
               </div>
               {showUnitGuide && (
@@ -1741,17 +1741,17 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                             setQuickIngTarget(idx); setModal("quickIng");
                           } else { updateLine(idx, "ingredient_id", e.target.value); }
                         }}
-                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400">
                         <option value="">-- Elegir ingrediente --</option>
-                        <option value="__new__" className="text-emerald-700 font-semibold">✚ Crear nuevo ingrediente...</option>
+                        <option value="__new__" className="text-misky-700 font-semibold">✚ Crear nuevo ingrediente...</option>
                         <option disabled>──────────────</option>
                         {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
                       </select>
                       <input type="number" min="0" step="0.001" value={line.qty || ""}
                         onChange={e => updateLine(idx, "qty", e.target.value)}
                         placeholder="Cant."
-                        className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
-                      {sub && <span className="text-xs font-semibold text-emerald-600 w-16 text-right">${sub}</span>}
+                        className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                      {sub && <span className="text-xs font-semibold text-misky-600 w-16 text-right">${sub}</span>}
                       <button onClick={() => removeLine(idx)} className="text-gray-300 hover:text-rose-400 text-lg">×</button>
                     </div>
                   );
@@ -1764,11 +1764,11 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
               </div>
             </div>
             {liveCalc && (
-              <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
-                <p className="text-xs text-emerald-600 font-semibold uppercase tracking-wide mb-3">Vista previa en tiempo real</p>
+              <div className="bg-misky-50 rounded-xl p-4 border border-misky-100">
+                <p className="text-xs text-misky-600 font-semibold uppercase tracking-wide mb-3">Vista previa en tiempo real</p>
                 <div className="grid grid-cols-3 gap-4 text-sm">
                   <div><p className="text-gray-500">Costo total/p</p><p className="font-bold text-gray-800">${liveCalc.totalCost.toFixed(2)}</p></div>
-                  <div><p className="text-gray-500">Precio sugerido</p><p className="font-bold text-emerald-700 text-lg">${liveCalc.roundedPrice.toLocaleString("es-AR")}</p></div>
+                  <div><p className="text-gray-500">Precio sugerido</p><p className="font-bold text-misky-700 text-lg">${liveCalc.roundedPrice.toLocaleString("es-AR")}</p></div>
                   <div><p className="text-gray-500">Ganancia real</p><p className="font-bold text-sky-600">{liveCalc.realProfitPct.toFixed(1)}%</p></div>
                 </div>
               </div>
@@ -1853,22 +1853,22 @@ function ComandaTab({ recipes, ingredients, business }) {
             const c = calcRecipe(r, ingredients, business);
             const qty = items[r.id] || 0;
             return (
-              <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-emerald-300 bg-emerald-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
+              <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-misky-300 bg-misky-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
                 <input type="checkbox" checked={qty > 0}
                   onChange={() => toggle(r.id)}
-                  className="w-5 h-5 accent-emerald-500 flex-shrink-0" />
+                  className="w-5 h-5 accent-misky-500 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-800 text-sm">{r.name}</p>
                   <p className="text-xs text-gray-400">{r.category}</p>
                 </div>
-                <p className="font-bold text-emerald-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
+                <p className="font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
                 {qty > 0 && (
                   <div className="flex items-center gap-1">
                     <button onClick={() => setQty(r.id, qty - 1)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center">−</button>
                     <input type="number" min="0" value={qty}
                       onChange={e => setQty(r.id, e.target.value)}
                       className="w-10 text-center border border-gray-200 rounded-lg py-0.5 text-sm font-medium" />
-                    <button onClick={() => setQty(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-emerald-100 hover:bg-emerald-200 text-emerald-700 font-bold text-sm flex items-center justify-center">+</button>
+                    <button onClick={() => setQty(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-misky-100 hover:bg-misky-200 text-misky-700 font-bold text-sm flex items-center justify-center">+</button>
                   </div>
                 )}
               </div>
@@ -1879,7 +1879,7 @@ function ComandaTab({ recipes, ingredients, business }) {
       </div>
 
       {selected.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-emerald-200 p-5 space-y-3">
+        <div className="bg-white rounded-xl shadow-sm border border-misky-200 p-5 space-y-3">
           <h3 className="font-bold text-gray-700">Resumen</h3>
           {selected.map(r => {
             const c = calcRecipe(r, ingredients, business);
@@ -1892,17 +1892,17 @@ function ComandaTab({ recipes, ingredients, business }) {
           })}
           <div className="flex justify-between border-t border-gray-100 pt-3 font-bold text-lg">
             <span>TOTAL</span>
-            <span className="text-emerald-600">${total.toLocaleString("es-AR")}</span>
+            <span className="text-misky-600">${total.toLocaleString("es-AR")}</span>
           </div>
           <div className="flex gap-2 items-center pt-1">
             <div className="w-16">
               <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
                 placeholder="Cód." title="Código de país (ej: 54 Argentina)"
-                className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+                className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
             </div>
             <input value={phone} onChange={e => setPhone(e.target.value)}
               placeholder="N° de WhatsApp (opcional)" type="tel"
-              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
           </div>
           <div className="flex gap-3">
             <a href={waLink} target="_blank" rel="noreferrer"
@@ -1989,7 +1989,7 @@ function ShoppingListModal({ selectedRecipes, ingredients, onClose }) {
         <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
           {grouped.map(([cat, items]) => (
             <div key={cat}>
-              <h4 className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1.5">{cat}</h4>
+              <h4 className="text-xs font-semibold text-misky-700 uppercase tracking-wide mb-1.5">{cat}</h4>
               <table className="w-full text-sm">
                 <tbody>
                   {items.map(it => (
@@ -2008,7 +2008,7 @@ function ShoppingListModal({ selectedRecipes, ingredients, onClose }) {
         </div>
         <div className="flex justify-between items-center border-t border-gray-100 pt-3">
           <span className="font-bold text-gray-700">TOTAL GENERAL</span>
-          <span className="font-bold text-emerald-600 text-lg">${grandTotal.toLocaleString("es-AR")}</span>
+          <span className="font-bold text-misky-600 text-lg">${grandTotal.toLocaleString("es-AR")}</span>
         </div>
         <div className="flex gap-3 justify-end">
           <Btn variant="secondary" onClick={downloadListCSV}>⬇️ CSV</Btn>
@@ -2074,15 +2074,15 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <StatCard label="Ingredientes"    value={ingredients.length} accent="sky" />
-        <StatCard label="Recetas activas" value={recipes.length}     accent="emerald" />
+        <StatCard label="Recetas activas" value={recipes.length}     accent="misky" />
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
       {canEdit && selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2.5 flex-wrap">
-          <span className="text-sm font-semibold text-emerald-700">{selectedIds.size} seleccionadas</span>
-          <button onClick={() => setShowShoppingList(true)} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">🛒 Lista de compras</button>
-          <button onClick={() => printRecipes(selectedRecipes, ingredients, business)} className="text-sm text-emerald-700 hover:text-emerald-800 font-medium underline">🖨️ Imprimir</button>
+        <div className="flex items-center gap-3 bg-misky-50 border border-misky-100 rounded-xl px-4 py-2.5 flex-wrap">
+          <span className="text-sm font-semibold text-misky-700">{selectedIds.size} seleccionadas</span>
+          <button onClick={() => setShowShoppingList(true)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
+          <button onClick={() => printRecipes(selectedRecipes, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir</button>
           <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
           <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
         </div>
@@ -2090,7 +2090,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h3 className="font-semibold text-gray-700">Resumen de recetas</h3>
-          <Pill color="emerald">{recipes.length} recetas</Pill>
+          <Pill color="misky">{recipes.length} recetas</Pill>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[560px]">
@@ -2098,7 +2098,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
               <tr className="bg-gray-50 border-b border-gray-100">
                 {canEdit && (
                   <th className="px-4 py-3 w-8">
-                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4 accent-emerald-500" />
+                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4 accent-misky-500" />
                   </th>
                 )}
                 {["Receta","Porciones","Costo/porción","Precio redondeado","Ganancia %"].map(h => (
@@ -2110,18 +2110,18 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
               {recipes.map((r, idx) => {
                 const c = calcRecipe(r, ingredients, business);
                 return (
-                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(r.id) ? "bg-emerald-50/60" : ""}`}>
+                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(r.id) ? "bg-misky-50/60" : ""}`}>
                     {canEdit && (
                       <td className="px-4 py-3">
-                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-emerald-500" />
+                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-misky-500" />
                       </td>
                     )}
                     <td className="px-4 py-3 font-medium text-gray-800">{r.name}</td>
                     <td className="px-4 py-3 text-gray-500">{r.portions}</td>
                     <td className="px-4 py-3 text-rose-600 font-medium">${c.totalCost.toFixed(2)}</td>
-                    <td className="px-4 py-3 font-bold text-emerald-600 text-base">${c.roundedPrice.toLocaleString("es-AR")}</td>
+                    <td className="px-4 py-3 font-bold text-misky-600 text-base">${c.roundedPrice.toLocaleString("es-AR")}</td>
                     <td className="px-4 py-3">
-                      <Pill color={c.realProfitPct >= 35 ? "emerald" : c.realProfitPct >= 20 ? "amber" : "rose"}>
+                      <Pill color={c.realProfitPct >= 35 ? "misky" : c.realProfitPct >= 20 ? "amber" : "rose"}>
                         {c.realProfitPct.toFixed(1)}%
                       </Pill>
                     </td>
@@ -2191,8 +2191,8 @@ export default function App() {
   };
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-emerald-50">
-      <div className="text-emerald-600 text-xl font-medium">🍽️ Cargando...</div>
+    <div className="min-h-screen flex items-center justify-center bg-misky-50">
+      <div className="text-misky-600 text-xl font-medium">🍽️ Cargando...</div>
     </div>
   );
   if (recoveryMode) return (
@@ -2203,17 +2203,17 @@ export default function App() {
   );
   if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
   if (!profile) return (
-    <div className="min-h-screen flex items-center justify-center bg-emerald-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-misky-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 max-w-sm text-center space-y-3">
         <div className="text-5xl">🔒</div>
         <h2 className="font-bold text-gray-800 text-lg">Cuenta sin acceso todavía</h2>
         <p className="text-sm text-gray-500">Entraste con <strong>{user.email}</strong>, pero todavía no tenés permisos asignados en RecetApp. Pedile a un administrador que te dé de alta desde la pestaña Usuarios.</p>
-        <button onClick={logout} className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">Cerrar sesión</button>
+        <button onClick={logout} className="text-sm text-misky-600 hover:text-misky-700 font-medium">Cerrar sesión</button>
       </div>
     </div>
   );
 
-  const roleColor = { admin: "rose", editor: "emerald", viewer: "sky", viewer_partial: "violet", custom: "violet" };
+  const roleColor = { admin: "rose", editor: "misky", viewer: "sky", viewer_partial: "violet", custom: "violet" };
   const roleLabel = { admin: "Admin", editor: "Editor", viewer: "Solo lectura", viewer_partial: "Vista parcial", custom: "Personalizado" };
 
   const canSeeTab = (id) => canSeeTabPerms(profile, id);
@@ -2239,7 +2239,7 @@ export default function App() {
           <nav className="hidden md:flex gap-1">
             {TABS.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${tab === t.id ? "bg-emerald-50 text-emerald-700" : "text-gray-500 hover:bg-gray-50"}`}>
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${tab === t.id ? "bg-misky-50 text-misky-700" : "text-gray-500 hover:bg-gray-50"}`}>
                 {t.label}
               </button>
             ))}
@@ -2250,11 +2250,11 @@ export default function App() {
                 else if (tab === "business") exportBusinessCSV(business);
                 else exportCSV(recipes, ingredients, business);
               }}
-              className="hidden sm:flex items-center gap-1.5 text-sm text-gray-600 hover:text-emerald-600 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
+              className="hidden sm:flex items-center gap-1.5 text-sm text-gray-600 hover:text-misky-600 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
               ⬇️ CSV
             </button>
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold">
+              <div className="w-7 h-7 rounded-full bg-misky-600 flex items-center justify-center text-white text-xs font-bold">
                 {(profile?.username || "?")[0].toUpperCase()}
               </div>
               <div className="hidden sm:block">
@@ -2268,7 +2268,7 @@ export default function App() {
         <div className="md:hidden flex overflow-x-auto border-t border-gray-100 px-2 py-1 gap-1">
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className={`flex-shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg ${tab === t.id ? "bg-emerald-50 text-emerald-700" : "text-gray-500"}`}>
+              className={`flex-shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg ${tab === t.id ? "bg-misky-50 text-misky-700" : "text-gray-500"}`}>
               {t.label}
             </button>
           ))}
