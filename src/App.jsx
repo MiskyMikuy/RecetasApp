@@ -2007,6 +2007,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   const [form, setForm]     = useState({});
   const [saving, setSaving] = useState(false);
   const [onlyNoPrice, setOnlyNoPrice] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchForm, setBatchForm]   = useState({ category:"", unit:"", waste_pct:"" });
   const [batchApply, setBatchApply] = useState({ category:false, unit:false, waste_pct:false });
@@ -2014,10 +2015,15 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
 
   const noPriceCount = ingredients.filter(i => !i.buy_price || i.buy_price === 0).length;
 
+  const categoryOptions = useMemo(() => (
+    [...new Set(ingredients.map(i => i.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"))
+  ), [ingredients]);
+
   const filtered = ingredients.filter(i =>
     (i.name.toLowerCase().includes(search.toLowerCase()) ||
      (i.category || "").toLowerCase().includes(search.toLowerCase())) &&
-    (!onlyNoPrice || !i.buy_price || i.buy_price === 0)
+    (!onlyNoPrice || !i.buy_price || i.buy_price === 0) &&
+    (!categoryFilter || i.category === categoryFilter)
   );
 
   const toggleSelect = (id) => setSelectedIds(prev => {
@@ -2121,6 +2127,11 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
             className={`flex-shrink-0 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${onlyNoPrice ? "bg-rose-500 border-rose-500 text-white" : "bg-white border-gray-200 text-rose-500 hover:bg-rose-50"}`}>
             Sin precio ({noPriceCount})
           </button>
+          <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+            className="flex-shrink-0 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400">
+            <option value="">Todas las categorías</option>
+            {categoryOptions.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+          </select>
         </div>
         {canEdit && <div className="flex gap-2">
             <Btn variant="secondary" onClick={() => setModal("merge")}>🔗 Fusionar duplicados</Btn>
@@ -2384,6 +2395,20 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   const showGanancia = canP(profile, "recipes", "ganancia");
   const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
+  const [search, setSearch]     = useState("");
+  const [mode, setMode]         = useState("ver"); // "ver" | "gestionar"
+  const [moreMenu, setMoreMenu] = useState(false);
+  const [detailMenu, setDetailMenu] = useState(false);
+  const [editingCat, setEditingCat] = useState(null);
+  const [editingCatValue, setEditingCatValue] = useState("");
+
+  const saveCategoryInline = async (id) => {
+    const val = editingCatValue.trim();
+    setEditingCat(null);
+    if (val === "") return;
+    await supabase.from("recipes").update({ category: val }).eq("id", id);
+    setRecipes(prev => sortByName(prev.map(r => r.id === id ? { ...r, category: val } : r)));
+  };
   const [form, setForm]         = useState({});
   const [saving, setSaving]       = useState(false);
   const [quickIngTarget, setQuickIngTarget] = useState(null);
@@ -2542,6 +2567,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 
   const ingMap  = Object.fromEntries(ingredients.map(i => [i.id, i]));
   const recipe  = recipes.find(r => r.id === selected);
+  useEffect(() => { setDetailMenu(false); }, [selected]);
   const calc    = recipe ? calcRecipe(recipe, ingredients, business) : null;
 
   const liveCalc = (() => {
@@ -2559,41 +2585,91 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   return (
     <div className="flex gap-5">
       {/* Sidebar */}
-      <div className="w-56 flex-shrink-0 space-y-2">
-        {canEdit && <Btn onClick={openAdd} className="w-full">+ Nueva receta</Btn>}
+      <div className="w-72 flex-shrink-0 space-y-2">
         {canEdit && (
-          <div className="grid grid-cols-1 gap-1.5">
-            <button onClick={() => setModal("import")}
-              className="text-xs text-misky-600 hover:text-misky-700 font-medium border border-misky-200 rounded-lg px-2 py-1.5 hover:bg-misky-50 transition-colors">
-              ⬆️ Importar CSV
-            </button>
-            <button onClick={() => exportRecipesCSVForImport(recipes, ingredients)}
-              className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 rounded-lg px-2 py-1.5 hover:bg-gray-50 transition-colors">
-              ⬇️ Descargar recetas (CSV)
-            </button>
-            <button onClick={() => downloadEmptyRecipesTemplate()}
-              title="CSV vacío con el formato correcto, para arrancar de cero"
-              className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 rounded-lg px-2 py-1.5 hover:bg-gray-50 transition-colors">
-              📄 Plantilla vacía (CSV)
-            </button>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            <button onClick={() => setMode("ver")}
+              className={`flex-1 text-sm py-2 transition-colors ${mode === "ver" ? "bg-misky-600 text-white font-medium" : "bg-white text-gray-500 hover:bg-gray-50"}`}>👁️ Ver</button>
+            <button onClick={() => setMode("gestionar")}
+              className={`flex-1 text-sm py-2 transition-colors ${mode === "gestionar" ? "bg-misky-600 text-white font-medium" : "bg-white text-gray-500 hover:bg-gray-50"}`}>✏️ Gestionar</button>
           </div>
         )}
-        {recipes.map(r => {
+
+        {mode === "gestionar" && canEdit && (
+          <div className="flex gap-2">
+            <Btn onClick={openAdd} className="flex-1 min-w-0">+ Nueva receta</Btn>
+            <div className="relative">
+              <button onClick={() => setMoreMenu(v => !v)} title="Más acciones"
+                className="h-full px-3 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors">⋯</button>
+              {moreMenu && (
+                <div className="absolute right-0 mt-1 w-52 bg-white rounded-lg shadow-lg border border-gray-100 z-10 py-1">
+                  <button onClick={() => { setModal("import"); setMoreMenu(false); }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">⬆️ Importar CSV</button>
+                  <button onClick={() => { exportRecipesCSVForImport(recipes, ingredients); setMoreMenu(false); }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">⬇️ Descargar recetas (CSV)</button>
+                  <button onClick={() => { downloadEmptyRecipesTemplate(); setMoreMenu(false); }}
+                    title="CSV vacío con el formato correcto, para arrancar de cero"
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">📄 Plantilla vacía (CSV)</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="relative">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar"
+                 className="w-full bg-gray-100 border-none rounded-full pl-9 pr-8 py-2 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-misky-400 focus:bg-white transition-colors" />
+          {search && (
+            <button onClick={() => setSearch("")} title="Borrar búsqueda"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-gray-300 hover:bg-gray-400 text-white text-xs leading-4 text-center">✕</button>
+          )}
+        </div>
+
+        {recipes.filter(r =>
+          normalizeText(r.name).includes(normalizeText(search)) ||
+          normalizeText(r.category || "").includes(normalizeText(search))
+        ).map(r => {
           const c = calcRecipe(r, ingredients, business);
           return (
-            <div key={r.id} onClick={() => setSelected(r.id)}
-              className={`bg-white rounded-xl border p-3 cursor-pointer transition-all hover:shadow-md ${selected === r.id ? "border-misky-400 shadow-md" : "border-gray-100"}`}>
-              <p className="font-semibold text-gray-800 text-sm leading-tight">{r.name}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{r.category} · {r.portions} u.</p>
-              <div className="flex justify-between items-center mt-2">
-                <span className="text-xs text-gray-400">Precio</span>
-                <span className="text-sm font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</span>
+            <div key={r.id}
+              className={`bg-white rounded-xl border p-3 transition-all hover:shadow-md ${selected === r.id ? "border-misky-400 shadow-md" : "border-gray-100"}`}>
+              <div className="cursor-pointer" onClick={() => setSelected(r.id)}>
+                <p className="font-semibold text-gray-800 text-sm leading-tight">{r.name}</p>
+                <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1 flex-wrap">
+                  {mode === "gestionar" && editingCat === r.id ? (
+                    <input autoFocus value={editingCatValue}
+                      onClick={e => e.stopPropagation()}
+                      onChange={e => setEditingCatValue(e.target.value)}
+                      onBlur={() => saveCategoryInline(r.id)}
+                      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditingCat(null); }}
+                      className="text-xs border border-misky-300 rounded px-1 py-0.5 w-24 focus:outline-none focus:ring-1 focus:ring-misky-400" />
+                  ) : (
+                    <span
+                      onClick={mode === "gestionar" ? (e) => { e.stopPropagation(); setEditingCat(r.id); setEditingCatValue(r.category || ""); } : undefined}
+                      title={mode === "gestionar" ? "Click para editar" : undefined}
+                      className={mode === "gestionar" ? "hover:bg-amber-50 rounded px-0.5 -mx-0.5 cursor-text border-b border-dotted border-gray-300" : ""}>
+                      {r.category || "Sin categoría"}
+                    </span>
+                  )}
+                  <span>· {r.portions} u.</span>
+                </p>
+                <div className="flex justify-between items-center mt-2">
+                  <span className="text-xs text-gray-400">Precio</span>
+                  <span className="text-sm font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</span>
+                </div>
               </div>
             </div>
           );
         })}
         {recipes.length === 0 && (
           <div className="text-center py-8 text-gray-400 text-sm"><div className="text-3xl mb-2">🍽️</div>Sin recetas aún</div>
+        )}
+        {recipes.length > 0 && recipes.filter(r =>
+          normalizeText(r.name).includes(normalizeText(search)) ||
+          normalizeText(r.category || "").includes(normalizeText(search))
+        ).length === 0 && (
+          <div className="text-center py-8 text-gray-400 text-sm"><div className="text-3xl mb-2">🔍</div>Sin resultados</div>
         )}
       </div>
 
@@ -2606,11 +2682,18 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 <h2 className="text-xl font-bold text-white">{recipe.name}</h2>
                 <p className="text-misky-200 text-sm mt-1">{recipe.category} · {recipe.portions} porciones · {recipe.profit_pct}% ganancia</p>
               </div>
-              {canEdit && (
-                <div className="flex gap-2">
+              {canEdit && mode === "gestionar" && (
+                <div className="flex gap-2 relative">
                   <button onClick={() => openEdit(recipe)} className="bg-white/20 hover:bg-white/30 text-white text-sm px-3 py-1.5 rounded-lg">✏️ Editar</button>
-                  <button onClick={() => openDuplicate(recipe)} title="Duplicar receta" className="bg-white/20 hover:bg-white/30 text-white text-sm px-3 py-1.5 rounded-lg">📄 Duplicar</button>
-                  <button onClick={() => del(recipe.id, recipe.name)} className="bg-white/20 hover:bg-rose-500 text-white text-sm px-3 py-1.5 rounded-lg">🗑</button>
+                  <button onClick={() => setDetailMenu(v => !v)} className="bg-white/20 hover:bg-white/30 text-white text-sm px-2.5 py-1.5 rounded-lg">⋯</button>
+                  {detailMenu && (
+                    <div className="absolute right-0 top-9 w-44 bg-white rounded-lg shadow-lg border border-gray-100 z-10 py-1">
+                      <button onClick={() => { setDetailMenu(false); openDuplicate(recipe); }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">📄 Duplicar</button>
+                      <button onClick={() => { setDetailMenu(false); del(recipe.id, recipe.name); }}
+                        className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50">🗑 Eliminar</button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2961,6 +3044,104 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
 
+  const [modal, setModal]           = useState(null);
+  const [bulkForm, setBulkForm]     = useState({ category: "", profit_pct: "" });
+  const [bulkAddIng, setBulkAddIng] = useState({ ingredientId: "", qty: "" });
+  const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const ingredientsInSelected = useMemo(() => {
+    const map = new Map();
+    recipes.filter(r => cartSel?.[r.id]).forEach(r => (r.recipe_ingredients || []).forEach(ri => {
+      const key = String(ri.ingredient_id);
+      if (!map.has(key)) {
+        const ing = ingredients.find(i => String(i.id) === key);
+        if (ing) map.set(key, ing);
+      }
+    }));
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [recipes, cartSel, ingredients]);
+
+  // Aplica el mismo cambio (categoría y/o % de ganancia) a todas las recetas
+  // tildadas de una sola vez — útil para corregir en masa, por ejemplo si un
+  // import dejó el rubro en "General" y hay que reasignarlo por lote.
+  const applyBulkEdit = async () => {
+    const ids = Object.entries(cartSel || {}).filter(([, v]) => v).map(([id]) => id);
+    if (ids.length === 0) return;
+    const patch = {};
+    if (bulkForm.category.trim() !== "") patch.category = bulkForm.category.trim();
+    if (bulkForm.profit_pct.trim() !== "") patch.profit_pct = +bulkForm.profit_pct;
+    if (Object.keys(patch).length === 0) return;
+
+    setBulkSaving(true);
+    await supabase.from("recipes").update(patch).in("id", ids);
+    setRecipes(prev => sortByName(prev.map(r => ids.includes(String(r.id)) ? { ...r, ...patch } : r)));
+    await logActivity(profile, "update", "recetas",
+      `Edición en lote (${ids.length}): ${Object.entries(patch).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+    setBulkSaving(false);
+    setModal(null);
+    setBulkForm({ category: "", profit_pct: "" });
+  };
+
+  // Agrega (o actualiza la cantidad de) un ingrediente en todas las recetas
+  // tildadas de una sola vez — por ejemplo, sumar "Descartable" a un grupo de
+  // recetas que lo necesitan sin tener que editarlas una por una.
+  const applyBulkAddIngredient = async () => {
+    const ids = Object.entries(cartSel || {}).filter(([, v]) => v).map(([id]) => id);
+    if (ids.length === 0 || !bulkAddIng.ingredientId || bulkAddIng.qty.trim() === "") return;
+    const qtyNum = +bulkAddIng.qty;
+    setBulkSaving(true);
+    const targetRecipes = recipes.filter(r => ids.includes(String(r.id)));
+    const toUpdate = [];
+    const toInsertRecipeIds = [];
+    targetRecipes.forEach(r => {
+      const existing = (r.recipe_ingredients || []).find(ri => String(ri.ingredient_id) === String(bulkAddIng.ingredientId));
+      if (existing) toUpdate.push(existing.id);
+      else toInsertRecipeIds.push(String(r.id));
+    });
+    if (toUpdate.length > 0) {
+      await Promise.all(toUpdate.map(lineId => supabase.from("recipe_ingredients").update({ qty: qtyNum }).eq("id", lineId)));
+    }
+    let inserted = [];
+    if (toInsertRecipeIds.length > 0) {
+      const { data } = await supabase.from("recipe_ingredients")
+        .insert(toInsertRecipeIds.map(recipeId => ({ recipe_id: recipeId, ingredient_id: bulkAddIng.ingredientId, qty: qtyNum })))
+        .select();
+      inserted = data || [];
+    }
+    setRecipes(prev => sortByName(prev.map(r => {
+      if (!ids.includes(String(r.id))) return r;
+      const lines = (r.recipe_ingredients || []).map(ri =>
+        String(ri.ingredient_id) === String(bulkAddIng.ingredientId) ? { ...ri, qty: qtyNum } : ri
+      );
+      const newLine = inserted.find(ins => String(ins.recipe_id) === String(r.id));
+      if (newLine) lines.push(newLine);
+      return { ...r, recipe_ingredients: lines };
+    })));
+    const ingName = ingredients.find(i => String(i.id) === String(bulkAddIng.ingredientId))?.name || "";
+    await logActivity(profile, "update", "recetas",
+      `Ingrediente agregado en lote: ${ingName} (${qtyNum}) en ${ids.length} recetas`);
+    setBulkSaving(false);
+    setBulkAddIng({ ingredientId: "", qty: "" });
+  };
+
+  // Quita un ingrediente de todas las recetas tildadas que lo tengan cargado.
+  const applyBulkRemoveIngredient = async () => {
+    const ids = Object.entries(cartSel || {}).filter(([, v]) => v).map(([id]) => id);
+    if (ids.length === 0 || !bulkRemoveIngId) return;
+    setBulkSaving(true);
+    await supabase.from("recipe_ingredients").delete().eq("ingredient_id", bulkRemoveIngId).in("recipe_id", ids);
+    setRecipes(prev => sortByName(prev.map(r => {
+      if (!ids.includes(String(r.id))) return r;
+      return { ...r, recipe_ingredients: (r.recipe_ingredients || []).filter(ri => String(ri.ingredient_id) !== String(bulkRemoveIngId)) };
+    })));
+    const ingName = ingredients.find(i => String(i.id) === String(bulkRemoveIngId))?.name || "";
+    await logActivity(profile, "delete", "recetas",
+      `Ingrediente quitado en lote: ${ingName} de ${ids.length} recetas`);
+    setBulkSaving(false);
+    setBulkRemoveIngId("");
+  };
+
   const toggleSelect = (id) => setCartSel(prev => ({ ...prev, [id]: !prev[id] }));
   const selectedCount = Object.values(cartSel || {}).filter(Boolean).length;
   const allSelected = recipes.length > 0 && recipes.every(r => cartSel?.[r.id]);
@@ -3015,6 +3196,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
           <div className="flex flex-wrap gap-2">
             <button onClick={() => downloadRecipesText(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir {selectedCount} receta{selectedCount !== 1 ? "s" : ""}</button>
             <button onClick={() => downloadShoppingListHTML(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
+            <button onClick={() => setModal("bulkEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote ({selectedCount})</button>
             <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
           </div>
         </div>
@@ -3065,6 +3247,74 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
           {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
         </div>
       </div>
+
+      {modal === "bulkEdit" && (
+        <Modal title={`Editar en lote (${selectedCount} recetas)`} onClose={() => setModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Completá solo lo que quieras cambiar — el campo que dejes vacío no se toca. Se aplica a las{" "}
+              <strong>{selectedCount}</strong> recetas tildadas.
+            </p>
+            <Field label="Categoría / Rubro (opcional)">
+              <TextInput value={bulkForm.category} onChange={e => setBulkForm(f => ({ ...f, category: e.target.value }))} placeholder="Ej: Carnes" />
+            </Field>
+            <Field label="% de ganancia (opcional)">
+              <TextInput value={bulkForm.profit_pct} onChange={e => setBulkForm(f => ({ ...f, profit_pct: e.target.value.replace(/[^0-9.]/g,"") }))} type="number" placeholder="Ej: 40" />
+            </Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
+              <Btn onClick={applyBulkEdit} disabled={bulkSaving || (bulkForm.category.trim()==="" && bulkForm.profit_pct.trim()==="")}>
+                {bulkSaving ? "Aplicando..." : "Aplicar cambios"}
+              </Btn>
+            </div>
+
+            <div className="border-t border-gray-100 pt-4 space-y-4">
+              <p className="text-sm font-semibold text-gray-700">Ingredientes</p>
+
+              <div className="bg-misky-50 border border-misky-100 rounded-lg p-3 space-y-2">
+                <p className="text-xs font-medium text-misky-700">➕ Agregar un ingrediente a las {selectedCount} recetas</p>
+                <div className="flex flex-col gap-2">
+                  <select value={bulkAddIng.ingredientId} onChange={e => setBulkAddIng(f => ({ ...f, ingredientId: e.target.value }))}
+                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-300 bg-white">
+                    <option value="">Elegir ingrediente...</option>
+                    {[...ingredients].sort((a, b) => a.name.localeCompare(b.name, "es")).map(i => (
+                      <option key={i.id} value={i.id}>{i.name}</option>
+                    ))}
+                  </select>
+                  <input value={bulkAddIng.qty} onChange={e => setBulkAddIng(f => ({ ...f, qty: e.target.value.replace(/[^0-9.]/g, "") }))}
+                         placeholder="Cantidad" type="number"
+                         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-300" />
+                </div>
+                <p className="text-[11px] text-misky-600">Si alguna receta ya tenía ese ingrediente, se le actualiza la cantidad. Al resto se lo agrega.</p>
+                <div className="flex justify-end">
+                  <Btn onClick={applyBulkAddIngredient} disabled={bulkSaving || !bulkAddIng.ingredientId || bulkAddIng.qty.trim() === ""}>
+                    {bulkSaving ? "Aplicando..." : "Agregar a todas"}
+                  </Btn>
+                </div>
+              </div>
+
+              <div className="bg-rose-50 border border-rose-100 rounded-lg p-3 space-y-2">
+                <p className="text-xs font-medium text-rose-700">➖ Quitar un ingrediente de las {selectedCount} recetas</p>
+                <select value={bulkRemoveIngId} onChange={e => setBulkRemoveIngId(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-300 bg-white">
+                  <option value="">Elegir ingrediente...</option>
+                  {ingredientsInSelected.map(i => (
+                    <option key={i.id} value={i.id}>{i.name}</option>
+                  ))}
+                </select>
+                {ingredientsInSelected.length === 0 && (
+                  <p className="text-[11px] text-rose-400">Ninguna de las recetas tildadas tiene ingredientes cargados todavía.</p>
+                )}
+                <div className="flex justify-end">
+                  <Btn variant="danger" onClick={applyBulkRemoveIngredient} disabled={bulkSaving || !bulkRemoveIngId}>
+                    {bulkSaving ? "Aplicando..." : "Quitar de todas"}
+                  </Btn>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3270,7 +3520,7 @@ export default function App() {
     { id:"ingredients", label:"📦 Ingredientes",   show: !esMozo && canSeeTab("ingredients") },
     { id:"business",    label:"⚙️ Costos",         show: !esMozo && canSeeTab("business") },
     { id:"comanda",     label:"🧾 Comanda",        show: esMozo },
-    { id:"miseenplace", label:"🔪 Mise en place",  show: esMozo },
+    { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
     { id:"admin",       label:"👥 Usuarios",       show: profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
 
