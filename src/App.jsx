@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
+import Papa from "papaparse";
 
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL;
@@ -42,6 +43,53 @@ function calcRecipe(recipe, ingredients, business) {
            totalCost, suggestedPrice, roundedPrice, realProfit, realProfitPct };
 }
 
+// ─── INFORME DE COSTEO POR PRODUCCIÓN ────────────────────────────────────────
+// selections: [{ recipeId, portionsMade }]. Escala cada receta a la cantidad
+// de porciones realmente producidas y agrupa el gasto por ingrediente,
+// dejando registrado a qué receta(s) pertenece cada uno. Usado por la lista
+// de compras y el mise en place "ricos" (HTML descargable).
+function calcProductionReport(selections, recipes, ingredients, business) {
+  const perRecipe = [];
+  const ingredientMap = new Map(); // ingredient_id -> { ing, qty, cost, recipeNames:Set }
+
+  selections.forEach(sel => {
+    const recipe = recipes.find(r => r.id === sel.recipeId);
+    const portionsMade = +sel.portionsMade || 0;
+    if (!recipe || portionsMade <= 0) return;
+    const calc = calcRecipe(recipe, ingredients, business);
+    const factor = recipe.portions > 0 ? portionsMade / recipe.portions : 0;
+
+    perRecipe.push({
+      recipe,
+      portionsMade,
+      unitCost: calc.mpPerPortion,
+      mpTotalScaled: calc.mpTotal * factor,
+      totalCostScaled: calc.mpTotal * factor,
+    });
+
+    calc.lines.forEach(l => {
+      const key = l.ing.id;
+      if (!ingredientMap.has(key)) {
+        ingredientMap.set(key, { ing: l.ing, qty: 0, cost: 0, recipes: new Set() });
+      }
+      const entry = ingredientMap.get(key);
+      entry.qty += l.qty * factor;
+      entry.cost += l.subtotal * factor;
+      entry.recipes.add(recipe.name);
+    });
+  });
+
+  const ingredientRows = Array.from(ingredientMap.values())
+    .map(e => ({ ing: e.ing, qty: e.qty, cost: e.cost, recipeNames: Array.from(e.recipes), recipeCount: e.recipes.size }))
+    .sort((a, b) => b.cost - a.cost);
+
+  const grandTotal    = perRecipe.reduce((s, r) => s + r.totalCostScaled, 0);
+  const totalPortions = perRecipe.reduce((s, r) => s + r.portionsMade, 0);
+  const totalMP       = ingredientRows.reduce((s, r) => s + r.cost, 0);
+
+  return { perRecipe, ingredientRows, grandTotal, totalPortions, totalMP };
+}
+
 // ─── GUÍA DE UNIDADES ─────────────────────────────────────────────────────────
 const UNIT_GUIDE = [
   { unit:"kg",  recipe:"Decimales: 0.250 = 250 g  ·  0.500 = 500 g  ·  1.000 = 1 kg" },
@@ -50,6 +98,190 @@ const UNIT_GUIDE = [
   { unit:"u",   recipe:"Enteros o medios: 1 = 1 unidad  ·  0.5 = media  ·  12 = docena" },
   { unit:"g",   recipe:"Directo: 50 = 50 g  ·  250 = 250 g  ·  500 = 500 g" },
 ];
+
+// ─── TEXTO NORMALIZADO (para comparar nombres sin distinguir mayúsculas/acentos) ──
+// Alias de normalizeName con el nombre usado por el resto de las funciones
+// de importación/exportación portadas — misma implementación, dos nombres.
+function normalizeText(s) { return normalizeName(s); }
+function sortByName(arr) {
+  return [...arr].sort((a, b) => (a.name || "").localeCompare(b.name || "", "es", { sensitivity: "base" }));
+}
+
+// Si el archivo no es un CSV/TXT, explica en el idioma más simple posible cómo
+// convertirlo, en vez de tirar un error de parseo confuso.
+function fileTypeGuidance(fileName) {
+  const ext = (fileName.split(".").pop() || "").toLowerCase();
+  if (ext === "csv" || ext === "txt") return null;
+  const guides = {
+    xlsx: "Es un archivo de Excel. Abrilo, andá a Archivo → Guardar como (o Descargar) → elegí el formato \"CSV (delimitado por comas)\" → subí ese archivo nuevo.",
+    xls:  "Es un archivo de Excel. Abrilo, andá a Archivo → Guardar como (o Descargar) → elegí el formato \"CSV (delimitado por comas)\" → subí ese archivo nuevo.",
+    doc:  "Es un archivo de Word — no sirve para importar datos en tabla. Copiá los datos y pegalos en una hoja de Excel o Google Sheets respetando las columnas, y después descargalo como CSV (Archivo → Descargar → Valores separados por comas).",
+    docx: "Es un archivo de Word — no sirve para importar datos en tabla. Copiá los datos y pegalos en una hoja de Excel o Google Sheets respetando las columnas, y después descargalo como CSV (Archivo → Descargar → Valores separados por comas).",
+    pdf:  "Es un archivo PDF — no se puede importar directamente. Pasá los datos a una hoja de Excel o Google Sheets y descargalo como CSV (Archivo → Descargar → Valores separados por comas).",
+  };
+  return guides[ext] || `El archivo ".${ext}" no se puede leer acá — subí un CSV (podés hacerlo desde Excel o Google Sheets con Archivo → Descargar/Guardar como → CSV).`;
+}
+
+// Lee el archivo detectando si está en UTF-8 o Windows-1252 (la codificación
+// típica de un CSV exportado desde Excel en español) — así los acentos no se
+// rompen según cómo se haya guardado el archivo.
+async function readFileSmartText(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
+// Convierte el texto crudo del archivo en una matriz de filas usando Papa Parse,
+// que soporta comillas, separadores embebidos y saltos de línea dentro de una
+// misma celda (necesario para campos de texto largo como el procedimiento).
+function parseCSVRows(text) {
+  const cleaned = text.replace(/^﻿/, "").split(/\r?\n/).filter(l => !l.startsWith("sep=")).join("\n");
+  const result = Papa.parse(cleaned.trim(), { skipEmptyLines: true });
+  return result.data;
+}
+
+// ─── PARSE CSV RECETAS ────────────────────────────────────────────────────────
+// Cada fila del CSV es un ingrediente de una receta. Varias filas con el mismo
+// nombre de receta (sin distinguir mayúsculas/acentos) se agrupan como una sola.
+// El procedimiento es independiente de las cantidades: se puede completar en
+// una sola fila de la receta (o dejar vacío) y no afecta el resto del import.
+function parseRecipesCSV(text) {
+  const rows2d = parseCSVRows(text);
+  if (rows2d.length < 2) throw new Error("El archivo debe tener encabezado y al menos una fila.");
+  const colMap = {
+    recipe:     ["receta","nombre","recipe","platorece","plato"],
+    category:   ["categoria","category","rubro"],
+    portions:   ["porciones","portions","cantidadporciones"],
+    profit:     ["ganancia","profit","gananciapct","margen","porcentajeganancia"],
+    ingredient: ["ingrediente","ingredient"],
+    qty:        ["cantidad","qty","cant"],
+    procedure:  ["procedimiento","preparacion","instrucciones","procedure"],
+    del:        ["eliminar","borrar","delete","baja"],
+  };
+  let headerRowIndex = -1, idx = {};
+  for (let r = 0; r < Math.min(rows2d.length, 15); r++) {
+    const normalized = rows2d[r].map(h => normalizeText(h).replace(/[^a-z0-9]/g, ""));
+    const testIdx = {};
+    for (const [key, aliases] of Object.entries(colMap)) {
+      for (const alias of aliases) {
+        const i = normalized.indexOf(alias);
+        if (i !== -1) { testIdx[key] = i; break; }
+      }
+    }
+    if (testIdx.recipe !== undefined) { headerRowIndex = r; idx = testIdx; break; }
+  }
+  if (idx.recipe === undefined) throw new Error("No se encontró la columna Receta.");
+
+  const groups = new Map();
+  for (let i = headerRowIndex + 1; i < rows2d.length; i++) {
+    const cols = rows2d[i];
+    const rawName = cols[idx.recipe]?.trim();
+    if (!rawName) continue;
+    const key = normalizeText(rawName);
+    if (!groups.has(key)) {
+      groups.set(key, { name: rawName, category: "", portions: null, profit_pct: null, procedure: "", deleteFlag: false, lines: [] });
+    }
+    const g = groups.get(key);
+    const toNum = v => (v === undefined || v === "") ? null : (parseFloat(v.replace(",", ".")) || null);
+    const category = idx.category !== undefined ? cols[idx.category]?.trim() : "";
+    if (category && !g.category) g.category = category;
+    const portions = idx.portions !== undefined ? toNum(cols[idx.portions]) : null;
+    if (portions && !g.portions) g.portions = portions;
+    const profit = idx.profit !== undefined ? toNum(cols[idx.profit]) : null;
+    if (profit && g.profit_pct === null) g.profit_pct = profit;
+    const procedure = idx.procedure !== undefined ? cols[idx.procedure]?.trim() : "";
+    if (procedure && !g.procedure) g.procedure = procedure;
+    const delVal = idx.del !== undefined ? normalizeText(cols[idx.del]) : "";
+    if (["si","s","x","1","true","yes"].includes(delVal)) g.deleteFlag = true;
+    const ingName = idx.ingredient !== undefined ? cols[idx.ingredient]?.trim() : "";
+    if (ingName) {
+      const qty = idx.qty !== undefined ? (toNum(cols[idx.qty]) || 0) : 0;
+      g.lines.push({ ingredientName: ingName, qty });
+    }
+  }
+  if (groups.size === 0) throw new Error("No se encontraron recetas válidas.");
+  return Array.from(groups.values());
+}
+
+// Cruza los grupos parseados contra recetas e ingredientes existentes para
+// decidir si cada receta se va a agregar, actualizar o eliminar, y para
+// resolver el nombre de cada ingrediente a su ID real.
+function resolveRecipeImport(groups, recipes, ingredients) {
+  return groups.map(g => {
+    const existing = recipes.find(r => normalizeText(r.name) === normalizeText(g.name));
+    const action = g.deleteFlag ? "delete" : existing ? "update" : "add";
+    const resolvedLines = [];
+    const unmatched = [];
+    if (!g.deleteFlag) {
+      for (const l of g.lines) {
+        const ing = ingredients.find(i => normalizeText(i.name) === normalizeText(l.ingredientName));
+        if (ing) resolvedLines.push({ ingredient_id: ing.id, qty: l.qty, name: ing.name, unit: ing.unit });
+        else unmatched.push({ name: l.ingredientName, qty: l.qty });
+      }
+    }
+    return {
+      name: g.name,
+      category: g.category || existing?.category || "General",
+      portions: g.portions || existing?.portions || 4,
+      profit_pct: g.profit_pct !== null ? g.profit_pct : (existing?.profit_pct ?? 40),
+      procedure: g.procedure || existing?.procedure || "",
+      action,
+      existingId: existing?.id ?? null,
+      lines: resolvedLines,
+      unmatched,
+    };
+  });
+}
+
+// Exporta las recetas actuales en el mismo formato que espera el importador
+// (una fila por ingrediente), para poder editarlas en Excel y volver a
+// subirlas, o como respaldo.
+function exportRecipesCSVForImport(recipes, ingredients) {
+  const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
+  const rows = [];
+  recipes.forEach(r => {
+    const lines = r.recipe_ingredients || [];
+    if (lines.length === 0) {
+      rows.push({
+        Receta: r.name, "Categoría": r.category || "", Porciones: r.portions, "% Ganancia": r.profit_pct,
+        Ingrediente: "", Cantidad: "", Procedimiento: r.procedure || "", Eliminar: "",
+      });
+    } else {
+      lines.forEach((l, idx) => {
+        const ing = ingMap[l.ingredient_id];
+        rows.push({
+          Receta: r.name,
+          "Categoría": idx === 0 ? (r.category || "") : "",
+          Porciones: idx === 0 ? r.portions : "",
+          "% Ganancia": idx === 0 ? r.profit_pct : "",
+          Ingrediente: ing ? ing.name : "",
+          Cantidad: l.qty,
+          Procedimiento: idx === 0 ? (r.procedure || "") : "",
+          Eliminar: "",
+        });
+      });
+    }
+  });
+  const csv = "sep=;\n" + Papa.unparse(rows, { delimiter: ";" });
+  downloadCSV(csv, "RecetApp_Recetas.csv");
+}
+
+// Plantilla vacía (sin las recetas cargadas) — pensada para arrancar de cero,
+// o para saber exactamente qué columnas usar. Trae una fila de ejemplo con el
+// formato de dos filas por receta (una con los datos generales + primer
+// ingrediente, y otra solo con el segundo ingrediente).
+function downloadEmptyRecipesTemplate() {
+  const S = ";";
+  let csv = "sep=;\n";
+  csv += `Receta${S}Categoría${S}Porciones${S}% Ganancia${S}Ingrediente${S}Cantidad${S}Procedimiento${S}Eliminar\n`;
+  csv += `Ejemplo: Arroz con pollo${S}Principales${S}4${S}35${S}Arroz${S}0,3${S}Hervir el arroz, saltear el pollo y mezclar.${S}\n`;
+  csv += `${S}${S}${S}${S}Pollo${S}0,5${S}${S}\n`;
+  downloadCSV(csv, "RecetApp_Plantilla_Recetas.csv");
+}
 
 // ─── PARSE CSV INGREDIENTES ───────────────────────────────────────────────────
 function parseIngredientsCSV(text) {
@@ -113,6 +345,514 @@ function downloadCSV(content, filename) {
   URL.revokeObjectURL(url);
 }
 
+// ─── LOGO MISKY MIKUY (embebido en base64, para los documentos HTML descargables) ──
+const LOGO_MM_BASE64 = "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";
+
+function escapeHtml(s) {
+  return (s ?? "").toString()
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function downloadTextFile(content, filename) {
+  const blob = new Blob(["﻿" + content], { type: "text/plain;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadHTMLFile(content, filename) {
+  const blob = new Blob([content], { type: "text/html;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Genera un recetario en HTML con diseño institucional (logo y colores de
+// Misky Mikuy) para las recetas seleccionadas — se puede abrir en el
+// navegador, imprimir o guardar como PDF desde ahí.
+function downloadRecipesText(selectedRecipes, ingredients, business) {
+  const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
+  const recipesHtml = selectedRecipes.map(r => {
+    const batches = r._batches || 1;
+    const calc = calcRecipe(r, ingredients, business);
+    const rows = calc.lines.map(l =>
+      `<tr><td>${escapeHtml(l.ing.name)}</td><td>${l.qty.toFixed(3)}</td><td>${escapeHtml(l.ing.unit)}</td><td class="qty-cell">${(l.qty * batches).toFixed(3)}</td></tr>`
+    ).join("");
+    const procedure = r.procedure && r.procedure.trim()
+      ? escapeHtml(r.procedure.trim()).replace(/\n/g, "<br/>")
+      : "<em>(sin procedimiento cargado)</em>";
+    return `
+    <div class="recipe">
+      <div class="recipe-header">
+        <h2>${escapeHtml(r.name)}</h2>
+        <p>${escapeHtml(r.category || "-")} · ${batches > 1 ? `×${batches} tandas · ${r.portions * batches} porciones` : `${r.portions} porciones`}</p>
+      </div>
+      <div class="recipe-body">
+        <p class="section-title">Ingredientes</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Ingrediente</th><th>Cant. cargada</th><th>Unidad</th><th>Cant. según selección${batches > 1 ? ` (×${batches})` : ""}</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+        <p class="section-title">Procedimiento</p>
+        <div class="procedure">${procedure}</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Recetario — Misky Mikuy</title>
+<style>
+  :root { --brand: #612577; --brand-dark: #351740; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1f2937; margin: 0; padding: 0 0 24px; background: #f3f4f6; }
+  .page-header { background: linear-gradient(135deg, var(--brand-dark), var(--brand)); padding: 18px 16px; display: flex; align-items: center; gap: 16px; }
+  .page-header img { height: 44px; }
+  .page-header h1 { color: white; font-size: 21px; margin: 0; }
+  .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
+  .recipe { background: white; margin: 16px auto 0; max-width: 760px; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
+  .recipe-header { background: var(--brand); color: white; padding: 16px 16px; }
+  .recipe-header h2 { margin: 0; font-size: 22px; }
+  .recipe-header p { margin: 4px 0 0; font-size: 14px; color: #ecdcf2; }
+  .recipe-body { padding: 16px 14px; }
+  .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 8px; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 16px; }
+  th { text-align: left; color: #6b7280; font-size: 11px; text-transform: uppercase; padding: 6px 5px; border-bottom: 2px solid #e5e7eb; }
+  td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
+  td.qty-cell { font-weight: 700; color: var(--brand-dark); }
+  tr:last-child td { border-bottom: none; }
+  .procedure { font-size: 16px; line-height: 1.6; color: #374151; }
+  .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
+  .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .print-btn:hover { background: #f9f4fb; }
+  @media print {
+    body { background: white; }
+    .recipe { box-shadow: none; border: 1px solid #e5e7eb; margin-top: 0; }
+    .recipe + .recipe { page-break-before: always; margin-top: 0; }
+    .footer { page-break-before: avoid; }
+    .page-header, .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .print-btn { display: none; }
+  }
+</style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
+  <div class="page-header">
+    <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
+    <div>
+      <h1>RecetApp</h1>
+      <p>Recetario · Misky Mikuy</p>
+    </div>
+  </div>
+  ${recipesHtml}
+  <div class="footer">Generado desde RecetApp · ${fecha}</div>
+</body>
+</html>`;
+
+  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Recetas.html");
+}
+
+// Genera una lista de compras imprimible en HTML, sumando los ingredientes de
+// todas las recetas seleccionadas (usa la cantidad tal cual está cargada en
+// cada receta, sin pedir porciones extra) y agrupada por rubro.
+function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
+  const selections = selectedRecipes.map(r => ({ recipeId: r.id, portionsMade: r.portions * (r._batches || 1) }));
+  const report = calcProductionReport(selections, selectedRecipes, ingredients, business);
+  const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
+
+  const byCategory = {};
+  report.ingredientRows.forEach(row => {
+    const cat = row.ing.category || "General";
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(row);
+  });
+  const sortedCategories = Object.entries(byCategory)
+    .sort(([catA], [catB]) => catA.localeCompare(catB, "es", { sensitivity: "base" }))
+    .map(([cat, rows]) => [
+      cat,
+      [...rows].sort((a, b) => a.ing.name.localeCompare(b.ing.name, "es", { sensitivity: "base" })),
+    ]);
+
+  // Algunos ingredientes no se compran fraccionados (ej. latas, paquetes,
+  // unidades sueltas) — para esos, redondea la cantidad a comprar hacia
+  // arriba, al entero más cercano. Los que se compran a granel (kg, lt, g,
+  // ml) se dejan tal cual, con decimales.
+  const DISCRETE_UNITS = ["unidad", "u", "docena", "unid", "un"];
+  const qtyToBuy = (row) => {
+    const unit = normalizeText(row.ing.unit);
+    return DISCRETE_UNITS.includes(unit) ? Math.ceil(row.qty) : row.qty;
+  };
+
+  let rowCounter = 0;
+  const categoriesHtml = sortedCategories.map(([cat, rows]) => {
+    const catTotal = rows.reduce((s, r) => s + qtyToBuy(r) * unitCost(r.ing), 0);
+    return `
+    <div class="cat-block">
+      <h3>${escapeHtml(cat)} <span class="cat-total">$${catTotal.toLocaleString("es-AR", {maximumFractionDigits:2})}</span></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th class="chk-col"></th><th>Ingrediente</th><th>Cant.</th><th>Unidad</th><th>P. unit.</th><th>Total</th><th class="col-para">Para</th></tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const buy = qtyToBuy(r);
+            const unitPrice = unitCost(r.ing);
+            const rowTotal = buy * unitPrice;
+            const roundedFlag = buy !== r.qty ? ` <span class="rounded" title="Redondeado, no se compra fraccionado">(necesita ${r.qty.toFixed(3)})</span>` : "";
+            const key = "row" + (rowCounter++);
+            return `<tr data-key="${key}" data-total="${rowTotal}"><td class="chk-cell"><input type="checkbox" class="buy-check" id="${key}" /></td><td><label for="${key}">${escapeHtml(r.ing.name)}</label></td><td>${buy.toFixed(DISCRETE_UNITS.includes(normalizeText(r.ing.unit)) ? 0 : 3)}${roundedFlag}</td><td>${escapeHtml(r.ing.unit)}</td><td>$${unitPrice.toLocaleString("es-AR",{maximumFractionDigits:2})}</td><td class="price-total">$${rowTotal.toLocaleString("es-AR",{maximumFractionDigits:2})}</td><td class="small col-para">${escapeHtml(r.recipeNames.join(", "))}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table></div>
+    </div>`;
+  }).join("");
+
+  const totalRows = rowCounter;
+  const grandTotal = sortedCategories.reduce((s, [, rows]) => s + rows.reduce((s2, r) => s2 + qtyToBuy(r) * unitCost(r.ing), 0), 0);
+  const listId = (selectedRecipes.map(r => r.id).sort().join("-") + "_" + fecha).replace(/[^a-zA-Z0-9_-]/g, "");
+
+  const recetasResumen = selectedRecipes.map(r => {
+    const batches = r._batches || 1;
+    return batches > 1
+      ? `${escapeHtml(r.name)} ×${batches} tandas (${r.portions * batches} porc.)`
+      : `${escapeHtml(r.name)} (${r.portions} porc.)`;
+  }).join(" · ");
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Lista de compras — Misky Mikuy</title>
+<style>
+  :root { --brand: #612577; --brand-dark: #351740; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1f2937; margin: 0; padding: 0 0 24px; background: #f3f4f6; }
+  .page-header { background: linear-gradient(135deg, var(--brand-dark), var(--brand)); padding: 18px 16px; display: flex; align-items: center; gap: 16px; }
+  .page-header img { height: 44px; }
+  .page-header h1 { color: white; font-size: 21px; margin: 0; }
+  .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
+  .wrap { max-width: 760px; margin: 16px auto 0; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .recetas-resumen { padding: 12px 14px; font-size: 14px; color: #6b7280; border-bottom: 1px solid #f3f4f6; }
+  .summary-box { padding: 14px 14px; border-bottom: 1px solid #f3f4f6; background: #f9f4fb; }
+  .summary-top { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .summary-top .label { font-size: 14px; color: #4b5563; }
+  .summary-top .amount { font-size: 26px; font-weight: 800; color: var(--brand-dark); }
+  .summary-progress-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--brand-dark); font-weight: 600; margin-bottom: 6px; }
+  .progress-track { background: #e2c6ec; border-radius: 999px; height: 8px; overflow: hidden; }
+  .progress-fill { background: var(--brand); height: 100%; border-radius: 999px; width: 0%; transition: width .2s ease; }
+  .remaining-row { margin-top: 10px; font-size: 14px; color: #4b5563; }
+  .remaining-row strong { color: #d97706; font-size: 17px; }
+  .cat-total { float: right; color: #6b7280; font-weight: 400; text-transform: none; letter-spacing: normal; }
+  .price-total { font-weight: 600; color: var(--brand); }
+  .rounded { font-size: 10px; color: #d97706; font-weight: 400; }
+  .cat-block { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+  .cat-block:last-child { border-bottom: none; }
+  .cat-block h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 10px; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th { text-align: left; color: #6b7280; font-size: 11px; text-transform: uppercase; padding: 6px 5px; border-bottom: 2px solid #e5e7eb; }
+  th.chk-col { width: 36px; }
+  td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
+  td.chk-cell { width: 36px; text-align: center; padding: 7px 4px; }
+  td.small { font-size: 12px; color: #9ca3af; }
+  tr:last-child td { border-bottom: none; }
+  .buy-check { width: 22px; height: 22px; cursor: pointer; accent-color: var(--brand); }
+  tr.bought td { color: #b0b7c1; text-decoration: line-through; }
+  tr.bought .price-total { color: #b0b7c1; }
+  label { cursor: pointer; }
+  .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
+  .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .print-btn:hover { background: #f9f4fb; }
+  .reset-btn { background: none; border: none; color: #9ca3af; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 0; }
+  @media (max-width: 480px) {
+    .col-para { display: none; }
+  }
+  @media print {
+    body { background: white; }
+    .wrap { box-shadow: none; border: 1px solid #e5e7eb; }
+    .page-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .print-btn { display: none; }
+    .reset-btn { display: none; }
+  }
+</style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
+  <div class="page-header">
+    <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
+    <div>
+      <h1>RecetApp</h1>
+      <p>Lista de compras · Misky Mikuy</p>
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="summary-box">
+      <div class="summary-top">
+        <span class="label">Total de la compra</span>
+        <span class="amount">$${grandTotal.toLocaleString("es-AR",{maximumFractionDigits:2})}</span>
+      </div>
+      <div class="summary-progress-row">
+        <span>Comprado: <span id="progressCount">0/${totalRows}</span></span>
+        <button class="reset-btn" onclick="window.recetappResetCompras && window.recetappResetCompras()">Reiniciar tildes</button>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressBarFill"></div></div>
+      <div class="remaining-row">Falta comprar: <strong id="remainingTotal">$${grandTotal.toLocaleString("es-AR",{maximumFractionDigits:2})}</strong></div>
+    </div>
+    ${categoriesHtml}
+  </div>
+  <div class="footer">Generado desde RecetApp · ${fecha} · Tildá cada producto a medida que lo vas comprando — se guarda solo en este dispositivo.</div>
+  <script>
+  (function(){
+    var STORAGE_KEY = "recetapp_compra_${listId}";
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch(e) {}
+    var rows = Array.prototype.slice.call(document.querySelectorAll("tr[data-key]"));
+    var totalGeneral = ${grandTotal};
+    function save() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
+    }
+    function updateSummary() {
+      var checkedCount = 0, checkedTotal = 0;
+      rows.forEach(function(tr){
+        var key = tr.getAttribute("data-key");
+        if (state[key]) { checkedCount++; checkedTotal += parseFloat(tr.getAttribute("data-total")) || 0; }
+      });
+      document.getElementById("progressCount").textContent = checkedCount + "/" + rows.length;
+      var pct = rows.length ? Math.round((checkedCount / rows.length) * 100) : 0;
+      document.getElementById("progressBarFill").style.width = pct + "%";
+      var remaining = totalGeneral - checkedTotal;
+      document.getElementById("remainingTotal").textContent = "$" + remaining.toLocaleString("es-AR", {maximumFractionDigits:2});
+    }
+    rows.forEach(function(tr){
+      var key = tr.getAttribute("data-key");
+      var chk = tr.querySelector(".buy-check");
+      if (state[key]) { chk.checked = true; tr.classList.add("bought"); }
+      chk.addEventListener("change", function(){
+        state[key] = chk.checked;
+        tr.classList.toggle("bought", chk.checked);
+        save();
+        updateSummary();
+      });
+    });
+    window.recetappResetCompras = function(){
+      state = {};
+      save();
+      rows.forEach(function(tr){
+        var chk = tr.querySelector(".buy-check");
+        chk.checked = false;
+        tr.classList.remove("bought");
+      });
+      updateSummary();
+    };
+    updateSummary();
+  })();
+  </script>
+</body>
+</html>`;
+
+  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Lista_de_compras.html");
+}
+
+// Genera una lista de "mise en place": para las recetas elegidas, suma cuánto
+// se necesita de cada ingrediente en total (sin redondear para compra, sin
+// precios) para que la cocina pueda pesar/preparar todo de una sola vez.
+function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
+  const selections = selectedRecipes.map(r => ({ recipeId: r.id, portionsMade: r.portions * (r._batches || 1) }));
+  const report = calcProductionReport(selections, selectedRecipes, ingredients, business);
+  const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
+
+  const byCategory = {};
+  report.ingredientRows.forEach(row => {
+    const cat = row.ing.category || "General";
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(row);
+  });
+  const sortedCategories = Object.entries(byCategory)
+    .sort(([catA], [catB]) => catA.localeCompare(catB, "es", { sensitivity: "base" }))
+    .map(([cat, rows]) => [
+      cat,
+      [...rows].sort((a, b) => a.ing.name.localeCompare(b.ing.name, "es", { sensitivity: "base" })),
+    ]);
+
+  const fmtQty = (n) => (Math.round(n * 1000) / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 });
+
+  let rowCounter = 0;
+  const categoriesHtml = sortedCategories.map(([cat, rows]) => `
+    <div class="cat-block">
+      <h3>${escapeHtml(cat)}</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th class="chk-col"></th><th>Ingrediente</th><th>Cantidad</th><th>Unidad</th><th class="col-para">Para</th></tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const key = "row" + (rowCounter++);
+            return `<tr data-key="${key}"><td class="chk-cell"><input type="checkbox" class="prep-check" id="${key}" /></td><td><label for="${key}">${escapeHtml(r.ing.name)}</label></td><td class="qty-cell">${fmtQty(r.qty)}</td><td>${escapeHtml(r.ing.unit)}</td><td class="small col-para">${escapeHtml(r.recipeNames.join(", "))}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table></div>
+    </div>`).join("");
+
+  const totalRows = rowCounter;
+  const listId = (selectedRecipes.map(r => r.id).sort().join("-") + "_mep_" + fecha).replace(/[^a-zA-Z0-9_-]/g, "");
+
+  // Detalle por receta: cuánto de cada ingrediente lleva CADA receta elegida
+  // (ya escalado por la cantidad de tandas), para armar/cocinar cada plato.
+  const perRecipeHtml = selectedRecipes.map(r => {
+    const batches = r._batches || 1;
+    const calc = calcRecipe(r, ingredients, business);
+    const lines = [...calc.lines].sort((a, b) => a.ing.name.localeCompare(b.ing.name, "es", { sensitivity: "base" }));
+    return `
+    <div class="recipe-block">
+      <h3>${escapeHtml(r.name)} <span class="recipe-meta">${batches > 1 ? `×${batches} tandas · ` : ""}${r.portions * batches} porciones</span></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Ingrediente</th><th>Cantidad</th><th>Unidad</th></tr></thead>
+        <tbody>
+          ${lines.map(l => `<tr><td>${escapeHtml(l.ing.name)}</td><td class="qty-cell">${fmtQty(l.qty * batches)}</td><td>${escapeHtml(l.ing.unit)}</td></tr>`).join("")}
+          ${lines.length === 0 ? `<tr><td colspan="3" class="small">Sin ingredientes cargados</td></tr>` : ""}
+        </tbody>
+      </table></div>
+    </div>`;
+  }).join("");
+
+  const recetasResumen = selectedRecipes.map(r => {
+    const batches = r._batches || 1;
+    return batches > 1
+      ? `${escapeHtml(r.name)} ×${batches} tandas (${r.portions * batches} porc.)`
+      : `${escapeHtml(r.name)} (${r.portions} porc.)`;
+  }).join(" · ");
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Mise en place — Misky Mikuy</title>
+<style>
+  :root { --brand: #612577; --brand-dark: #351740; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1f2937; margin: 0; padding: 0 0 24px; background: #f3f4f6; }
+  .page-header { background: linear-gradient(135deg, var(--brand-dark), var(--brand)); padding: 18px 16px; display: flex; align-items: center; gap: 16px; }
+  .page-header img { height: 44px; }
+  .page-header h1 { color: white; font-size: 21px; margin: 0; }
+  .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
+  .wrap { max-width: 760px; margin: 16px auto 0; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .recetas-resumen { padding: 12px 14px; font-size: 14px; color: #6b7280; border-bottom: 1px solid #f3f4f6; }
+  .summary-box { padding: 14px 14px; border-bottom: 1px solid #f3f4f6; background: #f9f4fb; }
+  .summary-progress-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: var(--brand-dark); font-weight: 600; margin-bottom: 8px; }
+  .progress-track { background: #e2c6ec; border-radius: 999px; height: 8px; overflow: hidden; }
+  .progress-fill { background: var(--brand); height: 100%; border-radius: 999px; width: 0%; transition: width .2s ease; }
+  .cat-block { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+  .cat-block:last-child { border-bottom: none; }
+  .cat-block h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 10px; }
+  .section-title { padding: 14px 14px 4px; font-size: 16px; font-weight: 800; color: var(--brand-dark); }
+  .recipe-block { padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+  .recipe-block:last-child { border-bottom: none; }
+  .recipe-block h3 { font-size: 15px; color: #1f2937; font-weight: 700; margin: 0 0 8px; }
+  .recipe-meta { font-size: 12px; color: #9ca3af; font-weight: 500; text-transform: none; letter-spacing: normal; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th { text-align: left; color: #6b7280; font-size: 11px; text-transform: uppercase; padding: 6px 5px; border-bottom: 2px solid #e5e7eb; }
+  th.chk-col { width: 36px; }
+  td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
+  td.chk-cell { width: 36px; text-align: center; padding: 7px 4px; }
+  td.qty-cell { font-weight: 700; color: var(--brand-dark); }
+  td.small { font-size: 12px; color: #9ca3af; }
+  tr:last-child td { border-bottom: none; }
+  .prep-check { width: 22px; height: 22px; cursor: pointer; accent-color: var(--brand); }
+  tr.done td { color: #b0b7c1; text-decoration: line-through; }
+  label { cursor: pointer; }
+  .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
+  .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .print-btn:hover { background: #f9f4fb; }
+  .reset-btn { background: none; border: none; color: #9ca3af; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 0; }
+  @media (max-width: 480px) {
+    .col-para { display: none; }
+  }
+  @media print {
+    body { background: white; }
+    .wrap { box-shadow: none; border: 1px solid #e5e7eb; }
+    .page-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .print-btn { display: none; }
+    .reset-btn { display: none; }
+  }
+</style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
+  <div class="page-header">
+    <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
+    <div>
+      <h1>RecetApp</h1>
+      <p>Mise en place · Misky Mikuy</p>
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="recetas-resumen">${recetasResumen}</div>
+    <div class="summary-box">
+      <div class="summary-progress-row">
+        <span>Preparado: <span id="progressCount">0/${totalRows}</span></span>
+        <button class="reset-btn" onclick="window.recetappResetPrep && window.recetappResetPrep()">Reiniciar tildes</button>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressBarFill"></div></div>
+    </div>
+    ${categoriesHtml}
+  </div>
+  <div class="wrap">
+    <div class="section-title">📋 Detalle por receta</div>
+    ${perRecipeHtml}
+  </div>
+  <div class="footer">Generado desde RecetApp · ${fecha} · Tildá cada ingrediente a medida que lo vas pesando/preparando — se guarda solo en este dispositivo.</div>
+  <script>
+  (function(){
+    var STORAGE_KEY = "recetapp_mep_${listId}";
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch(e) {}
+    var rows = Array.prototype.slice.call(document.querySelectorAll("tr[data-key]"));
+    function save() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
+    }
+    function updateSummary() {
+      var checkedCount = 0;
+      rows.forEach(function(tr){
+        var key = tr.getAttribute("data-key");
+        if (state[key]) checkedCount++;
+      });
+      document.getElementById("progressCount").textContent = checkedCount + "/" + rows.length;
+      var pct = rows.length ? Math.round((checkedCount / rows.length) * 100) : 0;
+      document.getElementById("progressBarFill").style.width = pct + "%";
+    }
+    rows.forEach(function(tr){
+      var key = tr.getAttribute("data-key");
+      var chk = tr.querySelector(".prep-check");
+      if (state[key]) { chk.checked = true; tr.classList.add("done"); }
+      chk.addEventListener("change", function(){
+        state[key] = chk.checked;
+        tr.classList.toggle("done", chk.checked);
+        save();
+        updateSummary();
+      });
+    });
+    window.recetappResetPrep = function(){
+      state = {};
+      save();
+      rows.forEach(function(tr){
+        var chk = tr.querySelector(".prep-check");
+        chk.checked = false;
+        tr.classList.remove("done");
+      });
+      updateSummary();
+    };
+    updateSummary();
+  })();
+  </script>
+</body>
+</html>`;
+
+  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Mise_en_place.html");
+}
+
 function exportCSV(recipes, ingredients, business) {
   const S = ";";
   const n = (v) => v.toString().replace(".", ",");
@@ -170,6 +910,27 @@ function exportBusinessCSV(business) {
 }
 
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
+// Asigna un color (tono HSL parejo) a cada categoría distinta, para poder
+// distinguirlas de un vistazo aunque haya muchas — no depende de una lista
+// fija de categorías conocidas de antemano.
+function buildCategoryColorMap(categories) {
+  const uniq = Array.from(new Set(categories.map(c => c || "Sin categoría"))).sort((a, b) => a.localeCompare(b, "es"));
+  const map = {};
+  uniq.forEach((cat, idx) => {
+    const hue = Math.round((idx / uniq.length) * 360);
+    map[cat] = { bg: `hsl(${hue}, 70%, 93%)`, text: `hsl(${hue}, 60%, 30%)` };
+  });
+  return map;
+}
+function CategoryTag({ category, colors }) {
+  const { bg, text } = colors || { bg: "#f3f4f6", text: "#4b5563" };
+  return (
+    <span className="text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: bg, color: text }}>
+      {category || "Sin categoría"}
+    </span>
+  );
+}
+
 function Pill({ children, color = "misky" }) {
   const map = {
     misky: "bg-misky-100 text-misky-700",
@@ -981,6 +1742,134 @@ function ImportCSVModal({ onClose, onImport }) {
   );
 }
 
+// ─── IMPORT CSV RECETAS ───────────────────────────────────────────────────────
+function ImportRecipesCSVModal({ onClose, onImport, recipes, ingredients }) {
+  const [step, setStep]         = useState("upload");
+  const [preview, setPreview]   = useState([]);
+  const [error, setError]       = useState("");
+  const [fileName, setFileName] = useState("");
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef();
+
+  const actionMeta = {
+    add:    { label: "Nueva",       color: "misky" },
+    update: { label: "Actualizada", color: "amber" },
+    delete: { label: "Eliminar",    color: "rose"  },
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name); setError("");
+    const guidance = fileTypeGuidance(file.name);
+    if (guidance) { setError(guidance); return; }
+    readFileSmartText(file).then(text => {
+      try {
+        const groups = parseRecipesCSV(text);
+        const resolved = resolveRecipeImport(groups, recipes, ingredients);
+        setPreview(resolved); setStep("preview");
+      } catch (err) { setError(err.message); }
+    });
+  };
+
+  const counts = {
+    add:    preview.filter(r => r.action === "add").length,
+    update: preview.filter(r => r.action === "update").length,
+    delete: preview.filter(r => r.action === "delete").length,
+  };
+  const hasUnmatched = preview.some(r => r.unmatched.length > 0);
+
+  const doImport = async () => {
+    setImporting(true);
+    await onImport(preview);
+    setImporting(false);
+    setStep("done");
+  };
+
+  return (
+    <Modal title="Importar recetas desde CSV" onClose={onClose} wide>
+      {step === "upload" && (
+        <div className="space-y-5">
+          <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 text-sm text-sky-800 space-y-2">
+            <p className="font-semibold">📋 Formato del archivo</p>
+            <p>Columnas: <strong>Receta · Categoría · Porciones · % Ganancia · Ingrediente · Cantidad · Procedimiento · Eliminar</strong></p>
+            <p className="text-xs text-sky-600"><strong>Procedimiento es opcional</strong> — podés subir el archivo con o sin esa columna. Completala en una sola fila de la receta (no hace falta repetirla); si la dejás vacía, no borra el procedimiento que ya tenía cargado esa receta.</p>
+            <p className="text-xs text-sky-600">Poné una fila por cada ingrediente de la receta, repitiendo el nombre de la receta. Todas las filas con el mismo nombre (sin importar mayúsculas o acentos) se agrupan en una sola receta.</p>
+            <p className="text-xs text-sky-600">Recetas que ya existen se <strong>actualizan</strong>; las nuevas se <strong>agregan</strong>. Para borrar una receta completa, poné <strong>SI</strong> en la columna Eliminar en cualquier fila de esa receta (no hace falta completar ingrediente ni cantidad en esa fila).</p>
+          </div>
+          <button onClick={() => downloadEmptyRecipesTemplate()}
+            className="text-sm text-misky-600 hover:text-misky-700 font-medium underline">
+            ⬇️ Descargar plantilla CSV
+          </button>
+          <div onClick={() => fileRef.current.click()}
+            className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-misky-400 hover:bg-misky-50/30 transition-all">
+            <div className="text-4xl mb-2">📂</div>
+            <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
+            <p className="text-xs text-gray-400 mt-1">CSV separado por comas o punto y coma</p>
+            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+          </div>
+          {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
+          <div className="flex justify-end"><Btn variant="secondary" onClick={onClose}>Cancelar</Btn></div>
+        </div>
+      )}
+      {step === "preview" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg flex-wrap">
+            <span>📄</span><span className="font-medium">{fileName}</span>
+            <span className="ml-auto flex gap-2">
+              {counts.add > 0 && <Pill color="misky">{counts.add} nueva{counts.add !== 1 ? "s" : ""}</Pill>}
+              {counts.update > 0 && <Pill color="amber">{counts.update} actualizada{counts.update !== 1 ? "s" : ""}</Pill>}
+              {counts.delete > 0 && <Pill color="rose">{counts.delete} a eliminar</Pill>}
+            </span>
+          </div>
+          {hasUnmatched && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              ✨ Algunos ingredientes no coinciden por nombre exacto con tu lista actual — se van a <strong>crear automáticamente</strong>, sin precio ni unidad definida, para que los completes después en la pestaña Ingredientes.
+            </p>
+          )}
+          <div className="overflow-x-auto max-h-72 rounded-xl border border-gray-100">
+            <table className="w-full text-xs min-w-[560px]">
+              <thead className="sticky top-0 bg-gray-50 border-b border-gray-100">
+                <tr>{["Receta","Acción","Categoría","Porciones","Ingredientes","A crear (sin precio)"].map(h=>(
+                  <th key={h} className="text-left px-3 py-2 font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {preview.map((r,i)=>(
+                  <tr key={i} className={`border-b border-gray-50 ${i%2===0?"bg-white":"bg-gray-50/40"}`}>
+                    <td className="px-3 py-2 font-medium text-gray-800">{r.name}</td>
+                    <td className="px-3 py-2"><Pill color={actionMeta[r.action].color}>{actionMeta[r.action].label}</Pill></td>
+                    <td className="px-3 py-2 text-gray-500">{r.action === "delete" ? "—" : r.category}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.action === "delete" ? "—" : r.portions}</td>
+                    <td className="px-3 py-2 text-gray-700">{r.action === "delete" ? "—" : r.lines.length}</td>
+                    <td className="px-3 py-2 text-amber-600">{r.unmatched.length > 0 ? r.unmatched.map(u => u.name).join(", ") : <span className="text-gray-300">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex gap-3 justify-end">
+            <Btn variant="secondary" onClick={()=>{setStep("upload");setPreview([]);setFileName("");}}>← Volver</Btn>
+            <Btn onClick={doImport} disabled={importing}>{importing ? "Procesando..." : `✓ Confirmar (${preview.length})`}</Btn>
+          </div>
+        </div>
+      )}
+      {step === "done" && (
+        <div className="text-center py-8 space-y-3">
+          <div className="text-5xl">✅</div>
+          <p className="text-lg font-bold text-gray-800">¡Importación exitosa!</p>
+          <p className="text-sm text-gray-500">
+            {counts.add > 0 && `${counts.add} agregada${counts.add !== 1 ? "s" : ""}`}
+            {counts.update > 0 && `${counts.add > 0 ? " · " : ""}${counts.update} actualizada${counts.update !== 1 ? "s" : ""}`}
+            {counts.delete > 0 && `${(counts.add > 0 || counts.update > 0) ? " · " : ""}${counts.delete} eliminada${counts.delete !== 1 ? "s" : ""}`}
+          </p>
+          <Btn onClick={onClose} className="mt-2">Cerrar</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // ─── QUICK-ADD INGREDIENTE (desde receta) ────────────────────────────────────
 function QuickAddIngredientModal({ onClose, onSave }) {
   const [form, setForm] = useState({ name:"", category:"", unit:"kg", buy_price:"", buy_qty:"1", waste_pct:"0" });
@@ -1214,7 +2103,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   };
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const catColors = { Secos:"amber", Lácteos:"sky", Frescos:"misky", Aceites:"violet", Dulces:"rose", Frutas:"misky" };
+  const categoryColorMap = useMemo(() => buildCategoryColorMap(ingredients.map(i => i.category)), [ingredients]);
   const previewCost = () => {
     const qty = +form.buy_qty || 0; const price = +form.buy_price || 0; const waste = +form.waste_pct || 0;
     if (qty <= 0) return "0.0000";
@@ -1272,7 +2161,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
                   </td>
                 )}
                 <td className="px-4 py-3 font-medium text-gray-800">{ing.name}</td>
-                <td className="px-4 py-3"><Pill color={catColors[ing.category] || "sky"}>{ing.category}</Pill></td>
+                <td className="px-4 py-3"><CategoryTag category={ing.category} colors={categoryColorMap[ing.category || "Sin categoría"]} /></td>
                 <td className="px-4 py-3 text-gray-500">{ing.unit}</td>
                 <td className="px-4 py-3 text-gray-700">{ing.buy_price ? `$${ing.buy_price.toLocaleString("es-AR")}` : <span className="text-rose-400 font-medium">Sin precio</span>}</td>
                 <td className="px-4 py-3 text-gray-500">{ing.buy_qty}</td>
@@ -1464,6 +2353,28 @@ function BusinessTab({ business, setBusiness, profile }) {
 }
 
 // ─── RECIPES ──────────────────────────────────────────────────────────────────
+// Inserta/actualiza una receta intentando guardar también el campo
+// "procedure". Si la base de datos todavía no tiene esa columna (falta
+// correr la migración en Supabase), reintenta sin ese campo en vez de
+// romper el guardado — así la app nunca se cae por esto, aunque el
+// procedimiento no se guarde hasta que se ejecute la migración.
+async function insertRecipeSafe(payload) {
+  let { data, error } = await supabase.from("recipes").insert(payload).select().single();
+  if (error) {
+    const { procedure, ...rest } = payload;
+    ({ data, error } = await supabase.from("recipes").insert(rest).select().single());
+  }
+  return { data, error };
+}
+async function updateRecipeSafe(id, payload) {
+  let { data, error } = await supabase.from("recipes").update(payload).eq("id", id).select().single();
+  if (error) {
+    const { procedure, ...rest } = payload;
+    ({ data, error } = await supabase.from("recipes").update(rest).eq("id", id).select().single());
+  }
+  return { data, error };
+}
+
 function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile }) {
   const canEdit = canEditTabPerms(profile, "recipes");
   const showIngredientes = canP(profile, "recipes", "ingredientes");
@@ -1484,11 +2395,11 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   }, [recipes, selected]);
 
   const openAdd = () => {
-    setForm({ name:"", category:"", portions:"4", profit_pct:"40", recipe_ingredients:[] });
+    setForm({ name:"", category:"", portions:"4", profit_pct:"40", procedure:"", recipe_ingredients:[] });
     setModal("form");
   };
   const openEdit = r => {
-    setForm({ ...r, portions: r.portions+"", profit_pct: r.profit_pct+"" });
+    setForm({ ...r, portions: r.portions+"", profit_pct: r.profit_pct+"", procedure: r.procedure || "" });
     setModal("form");
   };
   const openDuplicate = r => {
@@ -1497,6 +2408,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
       category: r.category,
       portions: r.portions + "",
       profit_pct: r.profit_pct + "",
+      procedure: r.procedure || "",
       recipe_ingredients: (r.recipe_ingredients || []).map(ri => ({ ingredient_id: String(ri.ingredient_id), qty: ri.qty + "" })),
     });
     setModal("form");
@@ -1508,18 +2420,17 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     const lines = (r.recipe_ingredients || [])
       .filter(l => l.ingredient_id !== "" && l.ingredient_id !== undefined && l.qty !== "" && +l.qty > 0)
       .map(l => ({ ingredient_id: +l.ingredient_id, qty: +l.qty }));
+    const payload = { name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct, procedure: r.procedure || "" };
 
     let recipeId = r.id;
     if (!r.id) {
-      const { data } = await supabase.from("recipes")
-        .insert({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct })
-        .select().single();
+      const { data, error } = await insertRecipeSafe(payload);
+      if (error || !data) { console.error("Insert error:", error); setSaving(false); return; }
       recipeId = data.id;
       await logActivity(profile, "create", "receta", r.name);
     } else {
-      await supabase.from("recipes")
-        .update({ name: r.name, category: r.category, portions: r.portions, profit_pct: r.profit_pct })
-        .eq("id", r.id);
+      const { error } = await updateRecipeSafe(r.id, payload);
+      if (error) { console.error("Update error:", error); setSaving(false); return; }
       await logActivity(profile, "update", "receta", r.name);
     }
 
@@ -1531,10 +2442,70 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 
     // Recargar recetas
     const { data: allRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
-    setRecipes(allRecipes || []);
+    setRecipes(sortByName(allRecipes || []));
     setSaving(false);
     setModal(null);
     setSelected(recipeId);
+  };
+
+  // Importa recetas desde el CSV ya resuelto (ver ImportRecipesCSVModal):
+  // agrega, actualiza o elimina según corresponda, creando automáticamente
+  // (sin precio ni unidad) los ingredientes que el archivo menciona pero que
+  // todavía no existen, para completarlos después desde Ingredientes.
+  const importRecipesCSV = async (rows) => {
+    const missingNames = new Map(); // normalizado -> nombre original
+    rows.forEach(row => {
+      if (row.action === "delete") return;
+      row.unmatched.forEach(u => {
+        const key = normalizeText(u.name);
+        if (!missingNames.has(key)) missingNames.set(key, u.name);
+      });
+    });
+    let currentIngredients = ingredients;
+    if (missingNames.size > 0) {
+      const toInsert = Array.from(missingNames.values()).map(name => ({
+        name, category: "General", unit: "", buy_price: 0, buy_qty: 1, waste_pct: 0,
+      }));
+      const { data: newIngs } = await supabase.from("ingredients").insert(toInsert).select();
+      if (newIngs && newIngs.length > 0) {
+        currentIngredients = sortByName([...currentIngredients, ...newIngs]);
+        setIngredients(currentIngredients);
+      }
+    }
+
+    for (const row of rows) {
+      if (row.action === "delete") {
+        if (row.existingId) await supabase.from("recipes").delete().eq("id", row.existingId);
+        continue;
+      }
+      const payload = { name: row.name, category: row.category, portions: +row.portions, profit_pct: +row.profit_pct, procedure: row.procedure || "" };
+      let recipeId = row.existingId;
+      if (recipeId) {
+        await updateRecipeSafe(recipeId, payload);
+      } else {
+        const { data } = await insertRecipeSafe(payload);
+        recipeId = data?.id;
+      }
+      if (recipeId) {
+        await supabase.from("recipe_ingredients").delete().eq("recipe_id", recipeId);
+        const allLines = [...row.lines];
+        row.unmatched.forEach(u => {
+          const ing = currentIngredients.find(i => normalizeText(i.name) === normalizeText(u.name));
+          if (ing) allLines.push({ ingredient_id: ing.id, qty: u.qty });
+        });
+        if (allLines.length > 0) {
+          await supabase.from("recipe_ingredients").insert(
+            allLines.map(l => ({ recipe_id: recipeId, ingredient_id: l.ingredient_id, qty: l.qty }))
+          );
+        }
+      }
+    }
+    const { data: allRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
+    setRecipes(sortByName(allRecipes || []));
+    const added = rows.filter(r => r.action === "add").length;
+    const updated = rows.filter(r => r.action === "update").length;
+    const deleted = rows.filter(r => r.action === "delete").length;
+    await logActivity(profile, "import", "recetas", `${added} nuevas, ${updated} actualizadas, ${deleted} eliminadas, ${missingNames.size} ingredientes nuevos sin precio`);
   };
 
   const del = async (id, name) => {
@@ -1590,6 +2561,23 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
       {/* Sidebar */}
       <div className="w-56 flex-shrink-0 space-y-2">
         {canEdit && <Btn onClick={openAdd} className="w-full">+ Nueva receta</Btn>}
+        {canEdit && (
+          <div className="grid grid-cols-1 gap-1.5">
+            <button onClick={() => setModal("import")}
+              className="text-xs text-misky-600 hover:text-misky-700 font-medium border border-misky-200 rounded-lg px-2 py-1.5 hover:bg-misky-50 transition-colors">
+              ⬆️ Importar CSV
+            </button>
+            <button onClick={() => exportRecipesCSVForImport(recipes, ingredients)}
+              className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 rounded-lg px-2 py-1.5 hover:bg-gray-50 transition-colors">
+              ⬇️ Descargar recetas (CSV)
+            </button>
+            <button onClick={() => downloadEmptyRecipesTemplate()}
+              title="CSV vacío con el formato correcto, para arrancar de cero"
+              className="text-xs text-gray-500 hover:text-gray-700 font-medium border border-gray-200 rounded-lg px-2 py-1.5 hover:bg-gray-50 transition-colors">
+              📄 Plantilla vacía (CSV)
+            </button>
+          </div>
+        )}
         {recipes.map(r => {
           const c = calcRecipe(r, ingredients, business);
           return (
@@ -1655,6 +2643,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 </tbody>
               </table>
             </div>}
+            {recipe.procedure && (
+              <div className="px-5 pb-3">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Procedimiento</h3>
+                <p className="text-sm text-gray-700 whitespace-pre-line bg-gray-50 rounded-xl p-4 border border-gray-100">{recipe.procedure}</p>
+              </div>
+            )}
             <div className="mx-5 mb-5 rounded-xl overflow-hidden text-sm border border-gray-100">
               {showCostos && [
                 ["Costo MP total", `$${calc.mpTotal.toFixed(2)}`, "bg-white"],
@@ -1763,6 +2757,14 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 )}
               </div>
             </div>
+            <div>
+              <Field label="Procedimiento (opcional)">
+                <textarea value={form.procedure || ""} onChange={e => setForm(p => ({ ...p, procedure: e.target.value }))}
+                  placeholder="Pasos de preparación, tiempos de cocción, notas para la cocina..." rows={6}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400 resize-y" />
+              </Field>
+              <p className="text-xs text-gray-400 mt-1">Es independiente de los ingredientes y las cantidades — podés dejarlo vacío y completarlo después, no afecta el costeo.</p>
+            </div>
             {liveCalc && (
               <div className="bg-misky-50 rounded-xl p-4 border border-misky-100">
                 <p className="text-xs text-misky-600 font-semibold uppercase tracking-wide mb-3">Vista previa en tiempo real</p>
@@ -1786,6 +2788,14 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           onSave={handleQuickIngSave}
         />
       )}
+      {modal === "import" && (
+        <ImportRecipesCSVModal
+          onClose={() => setModal(null)}
+          onImport={importRecipesCSV}
+          recipes={recipes}
+          ingredients={ingredients}
+        />
+      )}
     </div>
   );
 }
@@ -1795,7 +2805,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 const COMANDA_STORAGE_KEY = "recetapp_comanda_cart";
 const COMANDA_PHONE_KEY   = "recetapp_comanda_phone";
 
-function ComandaTab({ recipes, ingredients, business }) {
+function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLabel }) {
   const [items, setItems] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(COMANDA_STORAGE_KEY) || "{}");
@@ -1806,6 +2816,20 @@ function ComandaTab({ recipes, ingredients, business }) {
   const [phone, setPhone] = useState(() => {
     try { return localStorage.getItem(COMANDA_PHONE_KEY) || ""; } catch { return ""; }
   });
+
+  // Selección hecha en la pestaña Resumen (carrito compartido) — un botón
+  // opcional para traerla acá sin tener que volver a tildar todo a mano. No
+  // reemplaza la comanda local: solo la precarga si se toca el botón.
+  const cartCount = Object.values(cartSel || {}).filter(Boolean).length;
+  const useCartSelection = () => {
+    setItems(prev => {
+      const next = { ...prev };
+      Object.entries(cartSel || {}).forEach(([id, on]) => {
+        if (on) next[id] = +(cartBatch?.[id]) || 1;
+      });
+      return next;
+    });
+  };
 
   useEffect(() => {
     try { localStorage.setItem(COMANDA_STORAGE_KEY, JSON.stringify(items)); } catch {}
@@ -1848,6 +2872,13 @@ function ComandaTab({ recipes, ingredients, business }) {
     <div className="space-y-4 max-w-2xl mx-auto">
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar comanda</h2>
+        {cartCount > 0 && (
+          <button onClick={useCartSelection}
+            className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-sm mb-4 hover:bg-amber-100 transition-colors">
+            <span className="text-amber-800 font-medium">📋 Usar selección de Recetas ({cartCount}{cartLabel ? ` · ${cartLabel}` : ""})</span>
+            <span className="text-amber-600 text-xs">Tocar para cargar →</span>
+          </button>
+        )}
         <div className="space-y-2">
           {recipes.map(r => {
             const c = calcRecipe(r, ingredients, business);
@@ -1921,148 +2952,33 @@ function ComandaTab({ recipes, ingredients, business }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function buildShoppingList(selectedRecipes, ingredients) {
-  const ingMap = Object.fromEntries(ingredients.map(i => [i.id, i]));
-  const totals = {};
-  selectedRecipes.forEach(r => {
-    (r.recipe_ingredients || []).forEach(ri => {
-      totals[ri.ingredient_id] = (totals[ri.ingredient_id] || 0) + (ri.qty || 0);
-    });
-  });
-  const rows = Object.entries(totals).map(([id, qty]) => {
-    const ing = ingMap[+id];
-    if (!ing) return null;
-    const isFractionable = ing.unit === "kg" || ing.unit === "lt" || ing.unit === "g" || ing.unit === "ml";
-    const finalQty  = isFractionable ? qty : Math.ceil(qty);
-    const unitPrice = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
-    return { id: ing.id, name: ing.name, category: ing.category || "Sin categoría", unit: ing.unit, qty: finalQty, unitPrice, total: unitPrice * finalQty };
-  }).filter(Boolean);
-  rows.sort((a, b) => a.category.localeCompare(b.category, "es") || a.name.localeCompare(b.name, "es"));
-  return rows;
-}
-
-function ShoppingListModal({ selectedRecipes, ingredients, onClose }) {
-  const rows = useMemo(() => buildShoppingList(selectedRecipes, ingredients), [selectedRecipes, ingredients]);
-  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
-  const grouped = useMemo(() => {
-    const g = {};
-    rows.forEach(r => { (g[r.category] = g[r.category] || []).push(r); });
-    return Object.entries(g);
-  }, [rows]);
-
-  const printList = () => {
-    const win = window.open("", "_blank");
-    let html = `<html><head><title>Lista de compras</title><meta charset="utf-8"/>
-      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222}h1{color:#065f46}
-      table{width:100%;border-collapse:collapse;margin-bottom:18px}th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
-      th{background:#f0fdf4;color:#065f46;text-transform:uppercase;font-size:11px}
-      h2{font-size:14px;color:#065f46;margin:18px 0 4px}.tot{font-weight:bold;text-align:right}</style></head><body>
-      <h1>🍽️ RecetApp — Lista de compras</h1><p>${new Date().toLocaleDateString("es-AR")} · ${selectedRecipes.length} receta(s)</p>`;
-    grouped.forEach(([cat, items]) => {
-      html += `<h2>${cat}</h2><table><thead><tr><th>Ingrediente</th><th>Cant.</th><th>Unidad</th><th>P. unitario</th><th>Total</th></tr></thead><tbody>`;
-      items.forEach(it => {
-        html += `<tr><td>${it.name}</td><td>${it.unit === "kg" || it.unit === "lt" ? it.qty.toFixed(3) : it.qty}</td><td>${it.unit}</td><td>$${it.unitPrice.toFixed(2)}</td><td>$${it.total.toFixed(2)}</td></tr>`;
-      });
-      html += `</tbody></table>`;
-    });
-    html += `<p class="tot">TOTAL GENERAL: $${grandTotal.toLocaleString("es-AR")}</p></body></html>`;
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    win.print();
-  };
-
-  const downloadListCSV = () => {
-    const S = ";";
-    const n = (v) => v.toString().replace(".", ",");
-    let csv = "sep=;\nLISTA DE COMPRAS\n\n";
-    csv += `Categoría${S}Ingrediente${S}Cantidad${S}Unidad${S}Precio unitario${S}Total\n`;
-    rows.forEach(r => { csv += `${r.category}${S}${r.name}${S}${n(r.qty)}${S}${r.unit}${S}${n(r.unitPrice.toFixed(2))}${S}${n(r.total.toFixed(2))}\n`; });
-    csv += `\nTOTAL GENERAL${S}${S}${S}${S}${S}${n(grandTotal.toFixed(2))}\n`;
-    downloadCSV(csv, "RecetApp_ListaDeCompras.csv");
-  };
-
-  return (
-    <Modal title="🛒 Lista de compras" onClose={onClose} wide>
-      <div className="space-y-5">
-        <p className="text-sm text-gray-500">Suma de ingredientes de {selectedRecipes.length} receta(s) seleccionada(s), agrupados por categoría.</p>
-        <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
-          {grouped.map(([cat, items]) => (
-            <div key={cat}>
-              <h4 className="text-xs font-semibold text-misky-700 uppercase tracking-wide mb-1.5">{cat}</h4>
-              <table className="w-full text-sm">
-                <tbody>
-                  {items.map(it => (
-                    <tr key={it.id} className="border-b border-gray-50">
-                      <td className="py-1.5 text-gray-800">{it.name}</td>
-                      <td className="py-1.5 text-gray-500 text-right w-24">{it.unit === "kg" || it.unit === "lt" ? it.qty.toFixed(3) : it.qty} {it.unit}</td>
-                      <td className="py-1.5 text-gray-500 text-right w-20">${it.unitPrice.toFixed(2)}</td>
-                      <td className="py-1.5 font-medium text-gray-800 text-right w-24">${it.total.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
-          {rows.length === 0 && <p className="text-center text-gray-400 py-6">Las recetas seleccionadas no tienen ingredientes cargados.</p>}
-        </div>
-        <div className="flex justify-between items-center border-t border-gray-100 pt-3">
-          <span className="font-bold text-gray-700">TOTAL GENERAL</span>
-          <span className="font-bold text-misky-600 text-lg">${grandTotal.toLocaleString("es-AR")}</span>
-        </div>
-        <div className="flex gap-3 justify-end">
-          <Btn variant="secondary" onClick={downloadListCSV}>⬇️ CSV</Btn>
-          <Btn variant="secondary" onClick={printList}>🖨️ Imprimir</Btn>
-          <Btn onClick={onClose}>Cerrar</Btn>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function printRecipes(selectedRecipes, ingredients, business) {
-  const win = window.open("", "_blank");
-  let html = `<html><head><title>Recetas</title><meta charset="utf-8"/>
-    <style>body{font-family:Arial,sans-serif;padding:24px;color:#222}h1{color:#065f46}
-    .recipe{page-break-inside:avoid;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px}
-    .recipe h2{color:#065f46;margin:0 0 4px}.meta{color:#888;font-size:12px;margin-bottom:10px}
-    table{width:100%;border-collapse:collapse;margin-bottom:10px}th,td{padding:5px 6px;border-bottom:1px solid #eee;text-align:left;font-size:12px}
-    th{color:#065f46;text-transform:uppercase;font-size:10px}
-    .price{background:#059669;color:#fff;padding:8px 12px;border-radius:8px;font-weight:bold;text-align:right}</style></head><body>
-    <h1>🍽️ RecetApp — Recetas</h1><p style="color:#888">${new Date().toLocaleDateString("es-AR")}</p>`;
-  selectedRecipes.forEach(r => {
-    const c = calcRecipe(r, ingredients, business);
-    html += `<div class="recipe"><h2>${r.name}</h2><p class="meta">${r.category || ""} · ${r.portions} porciones · ${r.profit_pct}% ganancia</p>
-      <table><thead><tr><th>Ingrediente</th><th>Unidad</th><th>Cantidad</th><th>Subtotal</th></tr></thead><tbody>`;
-    c.lines.forEach(l => { html += `<tr><td>${l.ing.name}</td><td>${l.ing.unit}</td><td>${l.qty.toFixed(3)}</td><td>$${l.subtotal.toFixed(2)}</td></tr>`; });
-    html += `</tbody></table><div class="price">Precio de venta: $${c.roundedPrice.toLocaleString("es-AR")}</div></div>`;
-  });
-  html += `</body></html>`;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  win.print();
-}
-
-function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
+// La selección (cartSel/cartBatch/cartLabel) vive en App(), no acá adentro,
+// para no perderse al cambiar de pestaña y para poder reutilizarla directo en
+// Comanda / Mise en place sin volver a tildar todo.
+function Dashboard({ recipes, ingredients, setRecipes, business, profile,
+                      cartSel, setCartSel, cartBatch, setCartBatch, cartLabel, setCartLabel }) {
   const canEdit = canEditTabPerms(profile, "dashboard") || profile?.role === "admin";
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [showShoppingList, setShowShoppingList] = useState(false);
 
-  const toggleSelect = (id) => setSelectedIds(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
-  const allSelected = recipes.length > 0 && recipes.every(r => selectedIds.has(r.id));
-  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(recipes.map(r => r.id)));
-  const clearSelection = () => setSelectedIds(new Set());
-  const selectedRecipes = recipes.filter(r => selectedIds.has(r.id));
+  const toggleSelect = (id) => setCartSel(prev => ({ ...prev, [id]: !prev[id] }));
+  const selectedCount = Object.values(cartSel || {}).filter(Boolean).length;
+  const allSelected = recipes.length > 0 && recipes.every(r => cartSel?.[r.id]);
+  const toggleSelectAll = () => {
+    if (allSelected) { setCartSel({}); return; }
+    const next = {}; recipes.forEach(r => { next[r.id] = true; });
+    setCartSel(next);
+  };
+  const clearSelection = () => { setCartSel({}); setCartBatch({}); setCartLabel(""); };
+  const setBatch = (id, val) => {
+    const n = Math.max(1, parseInt(val) || 1);
+    setCartBatch(prev => ({ ...prev, [id]: n }));
+  };
+  const selectedRecipes = recipes.filter(r => cartSel?.[r.id]);
+  const selectedRecipesWithBatches = selectedRecipes.map(r => ({ ...r, _batches: +(cartBatch?.[r.id]) || 1 }));
 
   const deleteSelected = async () => {
-    const ids = [...selectedIds];
+    const ids = selectedRecipes.map(r => r.id);
     if (ids.length === 0) return;
     await supabase.from("recipes").delete().in("id", ids);
     setRecipes(prev => prev.filter(r => !ids.includes(r.id)));
@@ -2078,13 +2994,29 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
-      {canEdit && selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 bg-misky-50 border border-misky-100 rounded-xl px-4 py-2.5 flex-wrap">
-          <span className="text-sm font-semibold text-misky-700">{selectedIds.size} seleccionadas</span>
-          <button onClick={() => setShowShoppingList(true)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
-          <button onClick={() => printRecipes(selectedRecipes, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir</button>
-          <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
-          <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
+      {canEdit && selectedCount > 0 && (
+        <div className="bg-misky-50 border border-misky-100 rounded-xl px-4 py-3 space-y-2.5">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-semibold text-misky-700">{selectedCount} seleccionada{selectedCount !== 1 ? "s" : ""}</span>
+            <input value={cartLabel} onChange={e => setCartLabel(e.target.value)} placeholder="Etiqueta (ej: Mesa 5, Juan)..."
+                   className="border border-misky-200 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-misky-400 w-44" />
+            <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {selectedRecipes.map(r => (
+              <span key={r.id} className="inline-flex items-center gap-1 bg-white border border-misky-200 rounded-full pl-2 pr-1 py-0.5 text-xs text-gray-600">
+                {r.name}
+                <input type="number" min="1" value={cartBatch?.[r.id] || 1} onChange={e => setBatch(r.id, e.target.value)}
+                  title="Cantidad de tandas" className="w-9 text-center border-none bg-transparent text-misky-600 font-semibold focus:outline-none" />×
+                <button onClick={() => setCartSel(prev => ({ ...prev, [r.id]: false }))} className="text-gray-300 hover:text-rose-400 px-1">×</button>
+              </span>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => downloadRecipesText(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir {selectedCount} receta{selectedCount !== 1 ? "s" : ""}</button>
+            <button onClick={() => downloadShoppingListHTML(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
+            <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
+          </div>
         </div>
       )}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -2110,10 +3042,10 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
               {recipes.map((r, idx) => {
                 const c = calcRecipe(r, ingredients, business);
                 return (
-                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(r.id) ? "bg-misky-50/60" : ""}`}>
+                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
                     {canEdit && (
                       <td className="px-4 py-3">
-                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-misky-500" />
+                        <input type="checkbox" checked={!!cartSel?.[r.id]} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-misky-500" />
                       </td>
                     )}
                     <td className="px-4 py-3 font-medium text-gray-800">{r.name}</td>
@@ -2133,8 +3065,103 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile }) {
           {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
         </div>
       </div>
-      {showShoppingList && (
-        <ShoppingListModal selectedRecipes={selectedRecipes} ingredients={ingredients} onClose={() => setShowShoppingList(false)} />
+    </div>
+  );
+}
+
+// ─── MISE EN PLACE ────────────────────────────────────────────────────────────
+// Elegís qué recetas se van a cocinar (y en cuántas tandas) y te arma una
+// lista con la cantidad TOTAL de cada ingrediente a pesar/preparar — sin
+// precios, sin redondear para compra, agrupada por rubro y tildable.
+function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, cartLabel }) {
+  const [items, setItems] = useState({});
+  const [search, setSearch] = useState("");
+
+  const cartCount = Object.values(cartSel || {}).filter(Boolean).length;
+  const useCartSelection = () => {
+    const next = {};
+    Object.entries(cartSel || {}).forEach(([id, on]) => {
+      if (on) next[id] = +(cartBatch?.[id]) || 1;
+    });
+    setItems(next);
+  };
+
+  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
+  const setBatches = (id, val) => {
+    const n = Math.max(0, parseInt(val) || 0);
+    setItems(p => ({ ...p, [id]: n }));
+  };
+
+  const selected = recipes.filter(r => (items[r.id] || 0) > 0);
+  const filteredRecipes = recipes.filter(r =>
+    normalizeText(r.name).includes(normalizeText(search)) ||
+    normalizeText(r.category || "").includes(normalizeText(search))
+  );
+
+  const generar = () => {
+    downloadMisePrepHTML(
+      selected.map(r => ({ ...r, _batches: items[r.id] || 1 })),
+      ingredients, business
+    );
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl mx-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+        <h2 className="font-bold text-gray-800 text-lg mb-1">🔪 Mise en place</h2>
+        <p className="text-sm text-gray-500 mb-4">Elegí qué recetas vas a cocinar y te armo la lista con la cantidad total de cada ingrediente, lista para pesar y preparar.</p>
+        {cartCount > 0 && (
+          <button onClick={useCartSelection}
+            className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-sm mb-3 hover:bg-amber-100 transition-colors">
+            <span className="text-amber-800 font-medium">📋 Usar selección de Recetas ({cartCount}{cartLabel ? ` · ${cartLabel}` : ""})</span>
+            <span className="text-amber-600 text-xs">Tocar para cargar →</span>
+          </button>
+        )}
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar receta..."
+               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-misky-400" />
+        {selected.length > 0 && (
+          <div className="flex justify-between items-center bg-misky-50 border border-misky-100 rounded-lg px-3 py-2 text-sm mb-3">
+            <span className="font-semibold text-misky-700">🔪 {selected.length} receta{selected.length !== 1 ? "s" : ""} para preparar</span>
+          </div>
+        )}
+        <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+          {filteredRecipes.map(r => {
+            const qty = items[r.id] || 0;
+            return (
+              <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-misky-300 bg-misky-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
+                <input type="checkbox" checked={qty > 0}
+                  onChange={() => toggle(r.id)}
+                  className="w-5 h-5 accent-misky-500 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-gray-800 text-sm">{r.name}</p>
+                  <p className="text-xs text-gray-400">{r.category} · {r.portions} porc.</p>
+                </div>
+                {qty > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-400 mr-1">Tandas</span>
+                    <button onClick={() => setBatches(r.id, qty - 1)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center">−</button>
+                    <input type="number" min="0" value={qty}
+                      onChange={e => setBatches(r.id, e.target.value)}
+                      className="w-10 text-center border border-gray-200 rounded-lg py-0.5 text-sm font-medium" />
+                    <button onClick={() => setBatches(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-misky-100 hover:bg-misky-200 text-misky-700 font-bold text-sm flex items-center justify-center">+</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {filteredRecipes.length === 0 && recipes.length > 0 && <p className="text-center text-gray-400 py-8">🔍 Sin resultados</p>}
+          {recipes.length === 0 && <p className="text-center text-gray-400 py-8">Sin recetas disponibles</p>}
+        </div>
+      </div>
+
+      {selected.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-misky-200 p-5 space-y-3">
+          <Btn onClick={generar} className="w-full">🔪 Generar mise en place ({selected.length})</Btn>
+          <button onClick={() => setItems({})}
+            className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
+            Limpiar selección
+          </button>
+        </div>
       )}
     </div>
   );
@@ -2150,6 +3177,24 @@ export default function App() {
   const [ingredients, setIngredients] = useState([]);
   const [recipes, setRecipes]         = useState([]);
   const [business, setBusiness]       = useState({ fixed_costs:[], monthly_units:500, delivery_pct:5, iva_pct:21, other_var_pct:2 });
+
+  // Selección de recetas para imprimir / lista de compras / comanda / mise en
+  // place — vive acá (no adentro de RecipesTab ni de Dashboard) para que no se
+  // pierda al cambiar de pestaña, y para poder reutilizarla directo en
+  // Comanda y Mise en place sin volver a tildar todo.
+  const lsJSON = (key, fallback) => {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch { return fallback; }
+  };
+  const [cartSel, setCartSel]     = useState(() => lsJSON("recetapp_cart_sel", {}));      // recipeId -> true
+  const [cartBatch, setCartBatch] = useState(() => lsJSON("recetapp_cart_batch", {}));    // recipeId -> tandas
+  const [cartLabel, setCartLabel] = useState(() => {
+    try { return localStorage.getItem("recetapp_cart_label") || ""; } catch { return ""; }
+  });
+
+  useEffect(() => { try { localStorage.setItem("recetapp_cart_sel", JSON.stringify(cartSel)); } catch {} }, [cartSel]);
+  useEffect(() => { try { localStorage.setItem("recetapp_cart_batch", JSON.stringify(cartBatch)); } catch {} }, [cartBatch]);
+  useEffect(() => { try { localStorage.setItem("recetapp_cart_label", cartLabel); } catch {} }, [cartLabel]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -2180,8 +3225,8 @@ export default function App() {
       supabase.from("recipes").select("*, recipe_ingredients(*)").order("name"),
       supabase.from("business").select("*").eq("id", 1).single(),
     ]);
-    setIngredients(ings || []);
-    setRecipes(recs || []);
+    setIngredients(sortByName(ings || []));
+    setRecipes(sortByName(recs || []));
     if (biz) setBusiness(biz);
   };
 
@@ -2220,12 +3265,13 @@ export default function App() {
   const canEditTab = (id) => canEditTabPerms(profile, id);
   const esMozo = profile?.permissions?.es_mozo === true;
   const TABS = [
-    { id:"dashboard",   label:"📊 Resumen",      show: !esMozo && canSeeTab("dashboard") },
-    { id:"recipes",     label:"🍽️ Recetas",      show: !esMozo && canSeeTab("recipes") },
-    { id:"ingredients", label:"📦 Ingredientes",  show: !esMozo && canSeeTab("ingredients") },
-    { id:"business",    label:"⚙️ Costos",        show: !esMozo && canSeeTab("business") },
-    { id:"comanda",     label:"🧾 Comanda",       show: esMozo },
-    { id:"admin",       label:"👥 Usuarios",      show: profile?.permissions?.usuarios === true },
+    { id:"dashboard",   label:"📊 Resumen",       show: !esMozo && canSeeTab("dashboard") },
+    { id:"recipes",     label:"🍽️ Recetas",       show: !esMozo && canSeeTab("recipes") },
+    { id:"ingredients", label:"📦 Ingredientes",   show: !esMozo && canSeeTab("ingredients") },
+    { id:"business",    label:"⚙️ Costos",         show: !esMozo && canSeeTab("business") },
+    { id:"comanda",     label:"🧾 Comanda",        show: esMozo },
+    { id:"miseenplace", label:"🔪 Mise en place",  show: esMozo },
+    { id:"admin",       label:"👥 Usuarios",       show: profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
 
   return (
@@ -2275,12 +3321,17 @@ export default function App() {
         </div>
       </header>
       <main className="max-w-7xl mx-auto px-4 py-5">
-        {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile} />}
+        {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile}
+                                     cartSel={cartSel} setCartSel={setCartSel} cartBatch={cartBatch} setCartBatch={setCartBatch}
+                                     cartLabel={cartLabel} setCartLabel={setCartLabel} />}
         {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
         {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} profile={profile} />}
         {tab === "business"    && <BusinessTab business={business} setBusiness={setBusiness} profile={profile} />}
         {tab === "admin"       && profile?.permissions?.usuarios === true && <AdminPanel profile={profile} />}
-        {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile} />}
+        {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile}
+                                     cartSel={cartSel} cartBatch={cartBatch} cartLabel={cartLabel} />}
+        {tab === "miseenplace" && <MiseEnPlaceTab recipes={recipes} ingredients={ingredients} business={business}
+                                     cartSel={cartSel} cartBatch={cartBatch} cartLabel={cartLabel} />}
       </main>
     </div>
   );
