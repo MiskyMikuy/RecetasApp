@@ -1083,7 +1083,7 @@ function LoginScreen({ onLogin }) {
          style={{ background: "linear-gradient(135deg,#351740 0%,#612577 55%,#8C1117 100%)" }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="text-6xl mb-3">🍽️</div>
+          <img src="/logo-blanco.svg" alt="Misky Mikuy" className="h-16 mx-auto mb-4" />
           <h1 className="text-3xl font-bold text-white tracking-tight">RecetApp</h1>
           <p className="text-misky-200 text-sm mt-1">Costeo inteligente de recetas</p>
         </div>
@@ -1247,6 +1247,22 @@ const canEditTabPerms = (profile, tab) => {
   const tabP = perms[tab];
   if (!tabP) return false;
   return Object.values(tabP).some(g => g?.editar === true);
+};
+
+// Lista de ids de pestaña visibles para este perfil, en el mismo orden y con
+// la misma lógica que se usa para armar el menú — se reutiliza también para
+// validar la última pestaña recordada (ver recetapp_last_tab más abajo).
+const getVisibleTabIds = (profile) => {
+  const esMozo = profile?.permissions?.es_mozo === true;
+  const ids = [];
+  if (!esMozo && canSeeTabPerms(profile, "dashboard"))   ids.push("dashboard");
+  if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("recipes");
+  if (!esMozo && canSeeTabPerms(profile, "ingredients")) ids.push("ingredients");
+  if (!esMozo && canSeeTabPerms(profile, "business"))    ids.push("business");
+  if (esMozo) ids.push("comanda");
+  if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("miseenplace");
+  if (profile?.permissions?.usuarios === true)           ids.push("admin");
+  return ids;
 };
 
 const SECTION_LABELS = [
@@ -3423,7 +3439,12 @@ export default function App() {
   const [profile, setProfile]     = useState(null);
   const [loading, setLoading]     = useState(true);
   const [recoveryMode, setRecoveryMode] = useState(false);
-  const [tab, setTab]             = useState("dashboard");
+  // La pestaña activa se guarda en localStorage para que un refresh/actualización
+  // de la app (o que Vercel despliegue una versión nueva) no te mande de vuelta a
+  // Resumen — te deja donde estabas.
+  const [tab, setTab] = useState(() => {
+    try { return localStorage.getItem("recetapp_last_tab") || "dashboard"; } catch { return "dashboard"; }
+  });
   const [ingredients, setIngredients] = useState([]);
   const [recipes, setRecipes]         = useState([]);
   const [business, setBusiness]       = useState({ fixed_costs:[], monthly_units:500, delivery_pct:5, iva_pct:21, other_var_pct:2 });
@@ -3445,6 +3466,17 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem("recetapp_cart_sel", JSON.stringify(cartSel)); } catch {} }, [cartSel]);
   useEffect(() => { try { localStorage.setItem("recetapp_cart_batch", JSON.stringify(cartBatch)); } catch {} }, [cartBatch]);
   useEffect(() => { try { localStorage.setItem("recetapp_cart_label", cartLabel); } catch {} }, [cartLabel]);
+
+  useEffect(() => { try { localStorage.setItem("recetapp_last_tab", tab); } catch {} }, [tab]);
+
+  // Si la pestaña recordada ya no es válida para este perfil (cambiaron sus
+  // permisos, o el dispositivo lo comparte otro usuario), la corrige apenas
+  // carga el perfil en vez de dejarla en una pestaña que no puede ver.
+  useEffect(() => {
+    if (!profile) return;
+    const visible = getVisibleTabIds(profile);
+    setTab(prev => (visible.includes(prev) ? prev : (visible[0] || "dashboard")));
+  }, [profile]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -3486,8 +3518,9 @@ export default function App() {
   };
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-misky-50">
-      <div className="text-misky-600 text-xl font-medium">🍽️ Cargando...</div>
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-misky-50">
+      <img src="/logo-icono.svg" alt="Misky Mikuy" className="h-12 w-12" />
+      <div className="text-misky-600 text-lg font-medium">Cargando...</div>
     </div>
   );
   if (recoveryMode) return (
@@ -3529,7 +3562,7 @@ export default function App() {
       <header className="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="text-2xl">🍽️</span>
+            <img src="/logo-icono.svg" alt="Misky Mikuy" className="h-8 w-8" />
             <span className="font-bold text-gray-800 text-lg">RecetApp</span>
           </div>
           <nav className="hidden md:flex gap-1">
