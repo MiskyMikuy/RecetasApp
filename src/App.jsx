@@ -36,7 +36,7 @@ function calcRecipe(recipe, ingredients, business) {
   const totalCost      = subtotalDirect + varCost;
   const profitPct      = (recipe.profit_pct || 40) / 100;
   const suggestedPrice = profitPct < 1 ? totalCost / (1 - profitPct) : totalCost * 2;
-  const roundedPrice   = Math.ceil(suggestedPrice / 50) * 50;
+  const roundedPrice   = Math.ceil(suggestedPrice / 100) * 100;
   const realProfit     = roundedPrice - totalCost;
   const realProfitPct  = roundedPrice > 0 ? (realProfit / roundedPrice) * 100 : 0;
   return { lines, mpTotal, mpPerPortion, cfPerUnit, varCost, varPct,
