@@ -9,6 +9,11 @@ const SUPABASE_KEY  = process.env.REACT_APP_SUPABASE_ANON_KEY;
 const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── CALCULATIONS ─────────────────────────────────────────────────────────────
+// Redondeo del "precio redondeado": a qué múltiplo se redondea hacia arriba el
+// precio sugerido. Un solo lugar para cambiarlo — así el cálculo y el texto
+// "cada $..." que lo acompaña nunca quedan desincronizados.
+const PRICE_ROUND_TO = 100;
+
 function normalizeName(s) {
   return (s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
@@ -36,7 +41,7 @@ function calcRecipe(recipe, ingredients, business) {
   const totalCost      = subtotalDirect + varCost;
   const profitPct      = (recipe.profit_pct || 40) / 100;
   const suggestedPrice = profitPct < 1 ? totalCost / (1 - profitPct) : totalCost * 2;
-  const roundedPrice   = Math.ceil(suggestedPrice / 100) * 100;
+  const roundedPrice   = Math.ceil(suggestedPrice / PRICE_ROUND_TO) * PRICE_ROUND_TO;
   const realProfit     = roundedPrice - totalCost;
   const realProfitPct  = roundedPrice > 0 ? (realProfit / roundedPrice) * 100 : 0;
   return { lines, mpTotal, mpPerPortion, cfPerUnit, varCost, varPct,
@@ -2716,7 +2721,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
               {showCostos && <StatCard label="Costo x porción"   value={`$${calc.totalCost.toFixed(2)}`} accent="rose" />}
               {showPrecioSug && <StatCard label="Precio sugerido"   value={`$${calc.suggestedPrice.toFixed(2)}`} accent="amber" />}
-              {showPrecioRed && <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub="cada $50" accent="misky" />}
+              {showPrecioRed && <StatCard label="Precio redondeado" value={`$${calc.roundedPrice.toLocaleString("es-AR")}`} sub={`cada $${PRICE_ROUND_TO}`} accent="misky" />}
               {showGanancia && <StatCard label="Ganancia real"      value={`${calc.realProfitPct.toFixed(1)}%`} sub={`$${calc.realProfit.toFixed(2)}/p`} accent="sky" />}
             </div>
             {showIngredientes && <div className="px-5 pb-3">
