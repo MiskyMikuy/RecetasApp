@@ -294,9 +294,6 @@ function parseIngredientsCSV(text) {
   const sep = firstLine.includes(";") ? ";" : ",";
   const lines = text.trim().split(/\r?\n/).filter(l => l.trim() && !l.startsWith("sep="));
   if (lines.length < 2) throw new Error("El archivo debe tener encabezado y al menos una fila.");
-  const headers = lines[0].split(sep).map(h =>
-    h.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"")
-  );
   const colMap = {
     name:      ["nombre","ingrediente","name"],
     category:  ["categoria","category","rubro","tipo"],
@@ -305,16 +302,29 @@ function parseIngredientsCSV(text) {
     buy_qty:   ["cantidad","qty","cantidadcompra","bulto"],
     waste_pct: ["merma","waste","mermapct"],
   };
-  const idx = {};
-  for (const [key, aliases] of Object.entries(colMap)) {
-    for (const alias of aliases) {
-      const i = headers.indexOf(alias);
-      if (i !== -1) { idx[key] = i; break; }
+  // El archivo puede traer una linea de titulo antes del encabezado real (por
+  // ejemplo "INGREDIENTES", como lo escribe el propio boton "Descargar" de
+  // esta app y tambien el de RecetApp SA) -- en vez de asumir que la primera
+  // linea es siempre el encabezado, se busca la fila que efectivamente tiene
+  // una columna "Nombre". Esto permite reimportar un CSV exportado desde aca
+  // mismo, o pasar ingredientes entre distintas instancias de RecetApp.
+  let headerLineIndex = -1, idx = {};
+  for (let r = 0; r < Math.min(lines.length, 15); r++) {
+    const normalized = lines[r].split(sep).map(h =>
+      h.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"")
+    );
+    const testIdx = {};
+    for (const [key, aliases] of Object.entries(colMap)) {
+      for (const alias of aliases) {
+        const i = normalized.indexOf(alias);
+        if (i !== -1) { testIdx[key] = i; break; }
+      }
     }
+    if (testIdx.name !== undefined) { headerLineIndex = r; idx = testIdx; break; }
   }
   if (idx.name === undefined) throw new Error("No se encontró la columna Nombre.");
   const rows = [];
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerLineIndex + 1; i < lines.length; i++) {
     const cols = lines[i].split(sep).map(c => c.trim().replace(/^"|"$/g,""));
     const name = cols[idx.name]?.trim();
     if (!name) continue;
