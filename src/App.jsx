@@ -1181,9 +1181,12 @@ const PRESETS = {
   cocinero: {
     label: "👨‍🍳 Cocinero", color: "amber",
     perms: {
+      // Solo puede ver (no editar) datos básicos y consultar la lista de
+      // ingredientes de cada receta para cocinar (Mise en place). Sin acceso
+      // a costos, precios de compra ni ganancia: esos son solo para Admin.
       dashboard:   { stats: makeTabPerms(true,false), costos_stats: makeTabPerms(false,false), tabla_recetas: makeTabPerms(true,false) },
-      recipes:     { basicos: makeTabPerms(true,true), ingredientes: makeTabPerms(true,true), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
-      ingredients: { basicos: makeTabPerms(true,true), precios_compra: makeTabPerms(true,true), costo_neto: makeTabPerms(false,false) },
+      recipes:     { basicos: makeTabPerms(true,false), ingredientes: makeTabPerms(true,false), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: { basicos: makeTabPerms(true,false), precios_compra: makeTabPerms(false,false), costo_neto: makeTabPerms(false,false) },
       business:    makeGroups("business", false, false),
       usuarios: false,
     }
@@ -1222,10 +1225,13 @@ const PRESETS = {
   solo_lectura: {
     label: "👁 Solo lectura", color: "sky",
     perms: {
-      dashboard:   makeGroups("dashboard", true, false),
-      recipes:     makeGroups("recipes", true, false),
-      ingredients: makeGroups("ingredients", true, false),
-      business:    makeGroups("business", true, false),
+      // Puede ver recetas, ingredientes y el precio de venta, pero sin
+      // detalles de plata (costos, precios de compra, ganancia) — eso queda
+      // reservado a Admin.
+      dashboard:   { stats: makeTabPerms(true,false), costos_stats: makeTabPerms(false,false), tabla_recetas: makeTabPerms(true,false) },
+      recipes:     { basicos: makeTabPerms(true,false), ingredientes: makeTabPerms(true,false), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: { basicos: makeTabPerms(true,false), precios_compra: makeTabPerms(false,false), costo_neto: makeTabPerms(false,false) },
+      business:    makeGroups("business", false, false),
       usuarios: false,
     }
   },
@@ -1561,9 +1567,11 @@ function AdminPanel({ profile }) {
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-700">🔐 Accesos y permisos</p>
               </div>
-              {/* Presets rápidos */}
+              {/* Presets rápidos — "proveedor" queda definido en PRESETS por si
+                  hace falta en el futuro, pero no se ofrece para no confundir
+                  con roles que no se usan. */}
               <div className="flex flex-wrap gap-2">
-                {Object.entries(PRESETS).map(([key, preset]) => (
+                {Object.entries(PRESETS).filter(([key]) => key !== "proveedor").map(([key, preset]) => (
                   <button key={key}
                     onClick={() => setForm(p => ({ ...p, role: key === "admin" ? "admin" : "custom", permissions: preset.perms }))}
                     className={`text-xs px-2 py-1 rounded-lg border transition-colors ${
@@ -2711,7 +2719,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
             <div className="bg-gradient-to-r from-misky-700 to-misky-600 px-6 py-5 flex items-start justify-between">
               <div>
                 <h2 className="text-xl font-bold text-white">{recipe.name}</h2>
-                <p className="text-misky-200 text-sm mt-1">{recipe.category} · {recipe.portions} porciones · {recipe.profit_pct}% ganancia</p>
+                <p className="text-misky-200 text-sm mt-1">{recipe.category} · {recipe.portions} porciones{showGanancia ? ` · ${recipe.profit_pct}% ganancia` : ""}</p>
               </div>
               {canEdit && mode === "gestionar" && (
                 <div className="flex gap-2 relative">
@@ -2971,7 +2979,14 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
     let txt = "🧾 *Comanda RecetApp*\n\n";
     selected.forEach(r => {
       const c = calcRecipe(r, ingredients, business);
-      txt += `• ${items[r.id]}x ${r.name} — $${(c.roundedPrice * items[r.id]).toLocaleString("es-AR")}\n`;
+      const qty = items[r.id];
+      // Muestra el precio unitario siempre, además del subtotal de la línea
+      // (si es 1 unidad, subtotal y unitario coinciden y no se repite).
+      const unit = `$${c.roundedPrice.toLocaleString("es-AR")}`;
+      const lineTotal = `$${(c.roundedPrice * qty).toLocaleString("es-AR")}`;
+      txt += qty > 1
+        ? `• ${qty}x ${r.name} — ${unit} c/u — ${lineTotal}\n`
+        : `• ${qty}x ${r.name} — ${lineTotal}\n`;
     });
     txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
     return encodeURIComponent(txt);
@@ -3028,10 +3043,14 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
           <h3 className="font-bold text-gray-700">Resumen</h3>
           {selected.map(r => {
             const c = calcRecipe(r, ingredients, business);
+            const qty = items[r.id];
             return (
               <div key={r.id} className="flex justify-between text-sm">
-                <span className="text-gray-600">{items[r.id]}× {r.name}</span>
-                <span className="font-medium">${(c.roundedPrice * items[r.id]).toLocaleString("es-AR")}</span>
+                <span className="text-gray-600">
+                  {qty}× {r.name}
+                  {qty > 1 && <span className="text-gray-400"> (${c.roundedPrice.toLocaleString("es-AR")} c/u)</span>}
+                </span>
+                <span className="font-medium">${(c.roundedPrice * qty).toLocaleString("es-AR")}</span>
               </div>
             );
           })}
@@ -3080,6 +3099,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const [bulkAddIng, setBulkAddIng] = useState({ ingredientId: "", qty: "" });
   const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [search, setSearch]         = useState("");
+
+  const filteredRecipes = recipes.filter(r =>
+    normalizeText(r.name).includes(normalizeText(search)) ||
+    normalizeText(r.category || "").includes(normalizeText(search))
+  );
 
   const ingredientsInSelected = useMemo(() => {
     const map = new Map();
@@ -3175,10 +3200,10 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
 
   const toggleSelect = (id) => setCartSel(prev => ({ ...prev, [id]: !prev[id] }));
   const selectedCount = Object.values(cartSel || {}).filter(Boolean).length;
-  const allSelected = recipes.length > 0 && recipes.every(r => cartSel?.[r.id]);
+  const allSelected = filteredRecipes.length > 0 && filteredRecipes.every(r => cartSel?.[r.id]);
   const toggleSelectAll = () => {
     if (allSelected) { setCartSel({}); return; }
-    const next = {}; recipes.forEach(r => { next[r.id] = true; });
+    const next = { ...cartSel }; filteredRecipes.forEach(r => { next[r.id] = true; });
     setCartSel(next);
   };
   const clearSelection = () => { setCartSel({}); setCartBatch({}); setCartLabel(""); };
@@ -3233,9 +3258,20 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
         </div>
       )}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
           <h3 className="font-semibold text-gray-700">Resumen de recetas</h3>
-          <Pill color="misky">{recipes.length} recetas</Pill>
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar receta..."
+                     className="bg-gray-100 border-none rounded-full pl-9 pr-8 py-1.5 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-misky-400 focus:bg-white transition-colors w-44 sm:w-56" />
+              {search && (
+                <button onClick={() => setSearch("")} title="Borrar búsqueda"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-gray-300 hover:bg-gray-400 text-white text-xs leading-4 text-center">✕</button>
+              )}
+            </div>
+            <Pill color="misky">{filteredRecipes.length} receta{filteredRecipes.length !== 1 ? "s" : ""}</Pill>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[560px]">
@@ -3252,7 +3288,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
               </tr>
             </thead>
             <tbody>
-              {recipes.map((r, idx) => {
+              {filteredRecipes.map((r, idx) => {
                 const c = calcRecipe(r, ingredients, business);
                 return (
                   <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
@@ -3276,6 +3312,9 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             </tbody>
           </table>
           {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
+          {recipes.length > 0 && filteredRecipes.length === 0 && (
+            <div className="text-center py-10 text-gray-400"><div className="text-3xl mb-2">🔍</div>Sin resultados</div>
+          )}
         </div>
       </div>
 
