@@ -9,7 +9,7 @@
 // usaste en public/carta.html (Supabase → Project Settings → API).
 
 const SUPABASE_URL = "https://fwhusxzbgdmxiotumpky.supabase.co";
-const SUPABASE_ANON_KEY = "PEGAR_ACA_LA_ANON_KEY";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3aHVzeHpiZ2RteGlvdHVtcGt5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMDYxMzIsImV4cCI6MjA5NzU4MjEzMn0.y2iarbrk5IeNZ91tA4tlPSeKlUBTqeRORzFenXwHORw";
 
 export default async function handler(req, res) {
   try {
