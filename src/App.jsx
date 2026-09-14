@@ -3379,6 +3379,19 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   const [clientLabel, setClientLabel] = useState(() => {
     try { return localStorage.getItem(COMANDA_LABEL_KEY) || ""; } catch { return ""; }
   });
+  // Antes, el nombre de Resumen solo se copiaba acá si se tocaba el botón
+  // "Usar selección de Recetas" — pero ese botón está pensado para traer
+  // los PLATOS, no el nombre, y quedaba confuso: el cartel arriba decía
+  // "Gabriel" pero si el pedido ya se había armado antes (a mano, o de una
+  // comanda anterior) el mensaje seguía con el nombre viejo o vacío. Ahora
+  // el nombre se sincroniza solo cada vez que cambia en Resumen, salvo que
+  // ya se haya escrito/editado un nombre a mano acá para este pedido puntual
+  // (para no pisar un nombre distinto puesto a propósito en la Comanda).
+  const labelTouchedRef = useRef(false);
+  useEffect(() => {
+    if (!labelTouchedRef.current && cartLabel) setClientLabel(cartLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cartLabel]);
   // Barra fija abajo: muestra el total y el botón de enviar sin tener que
   // bajar hasta el final de la pantalla (con muchos platos o con la sección
   // de descuento/división abierta, llegar al botón de enviar implicaba
@@ -3422,6 +3435,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
     setDiscountPct("0");
     setSplitMode(false);
     setAssign({});
+    labelTouchedRef.current = false; // pedido nuevo: que vuelva a tomar el nombre de Resumen si hay uno
     try { localStorage.removeItem(COMANDA_STORAGE_KEY); } catch {}
   };
   const selected = recipes.filter(r => (items[r.id] || 0) > 0);
@@ -3712,7 +3726,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
           <div className="max-w-2xl mx-auto p-3">
             {phoneBarOpen && (
               <div className="space-y-2 mb-2">
-                <input value={clientLabel} onChange={e => setClientLabel(e.target.value)}
+                <input value={clientLabel} onChange={e => { labelTouchedRef.current = true; setClientLabel(e.target.value); }}
                   placeholder="Nombre del cliente (opcional)"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
                 <div className="flex gap-2">
