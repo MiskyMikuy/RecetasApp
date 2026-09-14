@@ -2787,6 +2787,20 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   const [saving, setSaving]       = useState(false);
   const [quickIngTarget, setQuickIngTarget] = useState(null);
   const [showUnitGuide, setShowUnitGuide]   = useState(false);
+  // Editar el precio de compra de un ingrediente sin salir del formulario de
+  // receta (antes solo se podía desde la pestaña Ingredientes) — actualiza el
+  // ingrediente real, así que el nuevo precio se refleja en TODAS las recetas
+  // que lo usan, no solo en esta.
+  const [editIngId, setEditIngId]   = useState(null);
+  const [editIngVal, setEditIngVal] = useState("");
+  const saveIngPrice = async () => {
+    if (!editIngId) return;
+    const id = editIngId;
+    const value = +editIngVal || 0;
+    setEditIngId(null);
+    const { data, error } = await supabase.from("ingredients").update({ buy_price: value }).eq("id", id).select().single();
+    if (!error && data) setIngredients(prev => prev.map(i => i.id === id ? data : i));
+  };
 
   useEffect(() => {
     if (selected === null && recipes.length > 0) setSelected(recipes[0].id);
@@ -3240,8 +3254,26 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                         onChange={e => updateLine(idx, "qty", e.target.value)}
                         placeholder="Cant."
                         className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                      {sub && <span className="text-xs font-semibold text-misky-600 w-16 text-right">${sub}</span>}
-                      <button onClick={() => removeLine(idx)} className="text-gray-300 hover:text-rose-400 text-lg">×</button>
+                      {ing && (
+                        editIngId === ing.id ? (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <input autoFocus type="number" min="0" step="0.01" value={editIngVal}
+                              onChange={e => setEditIngVal(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Enter") saveIngPrice(); if (e.key === "Escape") setEditIngId(null); }}
+                              className="w-20 border border-misky-300 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-misky-400" />
+                            <button onClick={saveIngPrice} title="Guardar precio" className="text-green-600 hover:text-green-700 text-sm">✓</button>
+                            <button onClick={() => setEditIngId(null)} title="Cancelar" className="text-gray-300 hover:text-rose-400 text-sm">✕</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => { setEditIngId(ing.id); setEditIngVal(String(ing.buy_price ?? "")); }}
+                            title={`Editar precio de compra de "${ing.name}" (se actualiza en todas las recetas que lo usan)`}
+                            className="flex items-center gap-1 flex-shrink-0 group">
+                            <span className="text-xs font-semibold text-misky-600 w-16 text-right">{sub ? `$${sub}` : "—"}</span>
+                            <span className="text-gray-300 group-hover:text-misky-500 text-xs">✎</span>
+                          </button>
+                        )
+                      )}
+                      <button onClick={() => removeLine(idx)} className="text-gray-300 hover:text-rose-400 text-lg flex-shrink-0">×</button>
                     </div>
                   );
                 })}
