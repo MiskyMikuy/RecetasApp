@@ -288,6 +288,15 @@ function downloadEmptyRecipesTemplate() {
   downloadCSV(csv, "RecetApp_Plantilla_Recetas.csv");
 }
 
+// Misma idea que downloadEmptyRecipesTemplate pero para ingredientes.
+function downloadEmptyIngredientsTemplate() {
+  const S = ";";
+  let csv = "sep=;\n";
+  csv += `Nombre${S}Categoría${S}Unidad${S}Precio compra${S}Cantidad${S}Merma %\n`;
+  csv += `Ejemplo: Harina 0000${S}Almacén${S}kg${S}2500${S}1${S}0\n`;
+  downloadCSV(csv, "RecetApp_Plantilla_Ingredientes.csv");
+}
+
 // ─── PARSE CSV INGREDIENTES ───────────────────────────────────────────────────
 function parseIngredientsCSV(text) {
   const firstLine = text.split(/\r?\n/)[0];
@@ -2035,6 +2044,21 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
     });
     return m;
   });
+  // Datos del ingrediente que queda, editables antes de fusionar por si ninguno
+  // de los duplicados tenía el nombre/unidad/precio bien cargado.
+  const [editMap, setEditMap] = useState(() => {
+    const m = {};
+    groups.forEach((g, idx) => {
+      const withPrice = g.find(i => i.buy_price > 0);
+      const keeper = withPrice || g[0];
+      m[idx] = { name: keeper.name || "", unit: keeper.unit || "", buy_price: keeper.buy_price != null ? String(keeper.buy_price) : "" };
+    });
+    return m;
+  });
+  const selectKeeper = (idx, ing) => {
+    setKeepMap(p => ({ ...p, [idx]: ing.id }));
+    setEditMap(p => ({ ...p, [idx]: { name: ing.name || "", unit: ing.unit || "", buy_price: ing.buy_price != null ? String(ing.buy_price) : "" } }));
+  };
   const [merging, setMerging] = useState(false);
   const [done, setDone]       = useState(0);
 
@@ -2044,6 +2068,15 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
     for (let idx = 0; idx < groups.length; idx++) {
       const group  = groups[idx];
       const keepId = keepMap[idx];
+      const edit   = editMap[idx] || {};
+      const patch  = {};
+      if (edit.name && edit.name.trim() !== "") patch.name = edit.name.trim();
+      if (edit.unit && edit.unit.trim() !== "") patch.unit = edit.unit.trim();
+      if (edit.buy_price !== "" && !isNaN(+edit.buy_price)) patch.buy_price = +edit.buy_price;
+      if (Object.keys(patch).length > 0) {
+        await supabase.from("ingredients").update(patch).eq("id", keepId);
+        updated = updated.map(i => i.id === keepId ? { ...i, ...patch } : i);
+      }
       const dropIds = group.filter(i => i.id !== keepId).map(i => i.id);
       if (dropIds.length === 0) { setDone(d => d + 1); continue; }
       for (const dropId of dropIds) {
@@ -2073,23 +2106,47 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
             Elegí cuál mantener en cada uno — el resto se borra y las recetas que los usaban pasan a usar el que elegiste.
           </p>
           <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
-            {groups.map((group, idx) => (
+            {groups.map((group, idx) => {
+              const edit = editMap[idx] || { name: "", unit: "", buy_price: "" };
+              return (
               <div key={idx} className="border border-gray-100 rounded-xl p-4">
                 <p className="font-semibold text-gray-700 mb-2">{group[0].name}</p>
                 <div className="space-y-1.5">
-                  {group.map(ing => (
-                    <label key={ing.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="radio" name={`grp-${idx}`} checked={keepMap[idx] === ing.id}
-                        onChange={() => setKeepMap(p => ({ ...p, [idx]: ing.id }))}
-                        className="accent-misky-500" />
-                      <span className="text-gray-700">
-                        {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
-                      </span>
+                  {group.map(ing => {
+                    const isKeeper = keepMap[idx] === ing.id;
+                    return (
+                    <label key={ing.id}
+                      className={`flex items-start gap-2 text-sm rounded-lg p-2 -mx-2 cursor-pointer ${isKeeper ? "bg-misky-50" : ""}`}>
+                      <input type="radio" name={`grp-${idx}`} checked={isKeeper}
+                        onChange={() => selectKeeper(idx, ing)}
+                        className="accent-misky-500 mt-1" />
+                      {isKeeper ? (
+                        <div className="flex-1 space-y-1.5" onClick={e => e.stopPropagation()}>
+                          <p className="text-xs font-semibold text-misky-700">✓ Este queda — corregí lo que haga falta:</p>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            <input value={edit.name} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], name: e.target.value } }))}
+                              placeholder="Nombre"
+                              className="col-span-3 border border-misky-200 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                            <input value={edit.unit} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], unit: e.target.value } }))}
+                              placeholder="Unidad"
+                              className="border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                            <input value={edit.buy_price} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], buy_price: e.target.value.replace(/[^0-9.]/g, "") } }))}
+                              type="number" min="0" placeholder="Precio compra"
+                              className="col-span-2 border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-gray-700">
+                          {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
+                        </span>
+                      )}
                     </label>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           <div className="flex gap-3 justify-end">
             <Btn variant="secondary" onClick={onClose} disabled={merging}>Cancelar</Btn>
@@ -2115,6 +2172,20 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   const [batchForm, setBatchForm]   = useState({ category:"", unit:"", waste_pct:"" });
   const [batchApply, setBatchApply] = useState({ category:false, unit:false, waste_pct:false });
   const [batchSaving, setBatchSaving] = useState(false);
+  const [editCell, setEditCell] = useState(null); // {id, field}
+  const [editVal, setEditVal]   = useState("");
+  const NUMERIC_FIELDS = ["buy_price", "buy_qty", "waste_pct"];
+  const startEdit = (ing, field) => { setEditCell({ id: ing.id, field }); setEditVal(String(ing[field] ?? "")); };
+  const saveEdit = async () => {
+    if (!editCell) return;
+    const { id, field } = editCell;
+    setEditCell(null);
+    const numeric = NUMERIC_FIELDS.includes(field);
+    const value = numeric ? (+editVal || 0) : editVal.trim();
+    if (!numeric && value === "") return;
+    const { data, error } = await supabase.from("ingredients").update({ [field]: value }).eq("id", id).select().single();
+    if (!error && data) setIngredients(prev => prev.map(i => i.id === id ? data : i));
+  };
 
   const noPriceCount = ingredients.filter(i => !i.buy_price || i.buy_price === 0).length;
 
@@ -2236,8 +2307,10 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
             {categoryOptions.map(cat => <option key={cat} value={cat}>{cat}</option>)}
           </select>
         </div>
-        {canEdit && <div className="flex gap-2">
+        {canEdit && <div className="flex gap-2 flex-wrap">
             <Btn variant="secondary" onClick={() => setModal("merge")}>🔗 Fusionar duplicados</Btn>
+            <Btn variant="secondary" onClick={() => exportIngredientsCSV(ingredients)}>⬇️ Descargar lista (CSV)</Btn>
+            <Btn variant="secondary" onClick={downloadEmptyIngredientsTemplate} title="CSV vacío con el formato correcto, para arrancar de cero">📄 Plantilla vacía (CSV)</Btn>
             <Btn variant="secondary" onClick={() => setModal("import")}>⬆️ Importar CSV</Btn>
             <Btn onClick={openAdd}>+ Agregar ingrediente</Btn>
           </div>}
@@ -2266,31 +2339,47 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((ing, idx) => (
-              <tr key={ing.id} className={`border-b border-gray-50 hover:bg-misky-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(ing.id) ? "bg-misky-50/60" : ""}`}>
-                {canEdit && (
-                  <td className="px-4 py-3">
-                    <input type="checkbox" checked={selectedIds.has(ing.id)} onChange={() => toggleSelect(ing.id)}
-                      className="w-4 h-4 accent-misky-500" />
-                  </td>
-                )}
-                <td className="px-4 py-3 font-medium text-gray-800">{ing.name}</td>
-                <td className="px-4 py-3"><CategoryTag category={ing.category} colors={categoryColorMap[ing.category || "Sin categoría"]} /></td>
-                <td className="px-4 py-3 text-gray-500">{ing.unit}</td>
-                <td className="px-4 py-3 text-gray-700">{ing.buy_price ? `$${ing.buy_price.toLocaleString("es-AR")}` : <span className="text-rose-400 font-medium">Sin precio</span>}</td>
-                <td className="px-4 py-3 text-gray-500">{ing.buy_qty}</td>
-                <td className="px-4 py-3">{ing.waste_pct > 0 ? <Pill color="rose">{ing.waste_pct}%</Pill> : <span className="text-gray-300">—</span>}</td>
-                <td className="px-4 py-3 font-semibold text-misky-700">${unitCost(ing).toFixed(4)}</td>
-                {canEdit && (
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-misky-600">✏️</button>
-                      <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>
-                    </div>
-                  </td>
-                )}
-              </tr>
-            ))}
+            {filtered.map((ing, idx) => {
+              const editing = f => editCell && editCell.id === ing.id && editCell.field === f;
+              const cell = (field, display, width = "w-20") => editing(field) ? (
+                <input autoFocus value={editVal} type={NUMERIC_FIELDS.includes(field) ? "number" : "text"}
+                  onChange={e => setEditVal(e.target.value)}
+                  onBlur={saveEdit}
+                  onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditCell(null); }}
+                  className={`${width} border border-misky-300 rounded px-1.5 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-misky-400`} />
+              ) : (
+                <span onClick={canEdit ? () => startEdit(ing, field) : undefined}
+                  title={canEdit ? "Click para editar" : undefined}
+                  className={canEdit ? "cursor-text hover:bg-amber-50 rounded px-1 -mx-1 border-b border-dotted border-transparent hover:border-gray-300" : ""}>
+                  {display}
+                </span>
+              );
+              return (
+                <tr key={ing.id} className={`border-b border-gray-50 hover:bg-misky-50/30 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${selectedIds.has(ing.id) ? "bg-misky-50/60" : ""}`}>
+                  {canEdit && (
+                    <td className="px-4 py-3">
+                      <input type="checkbox" checked={selectedIds.has(ing.id)} onChange={() => toggleSelect(ing.id)}
+                        className="w-4 h-4 accent-misky-500" />
+                    </td>
+                  )}
+                  <td className="px-4 py-3 font-medium text-gray-800">{cell("name", ing.name, "w-32")}</td>
+                  <td className="px-4 py-3">{cell("category", <CategoryTag category={ing.category} colors={categoryColorMap[ing.category || "Sin categoría"]} />, "w-24")}</td>
+                  <td className="px-4 py-3 text-gray-500">{cell("unit", ing.unit, "w-16")}</td>
+                  <td className="px-4 py-3 text-gray-700">{cell("buy_price", ing.buy_price ? `$${ing.buy_price.toLocaleString("es-AR")}` : <span className="text-rose-400 font-medium">Sin precio</span>, "w-24")}</td>
+                  <td className="px-4 py-3 text-gray-500">{cell("buy_qty", ing.buy_qty, "w-16")}</td>
+                  <td className="px-4 py-3">{cell("waste_pct", ing.waste_pct > 0 ? <Pill color="rose">{ing.waste_pct}%</Pill> : <span className="text-gray-300">—</span>, "w-16")}</td>
+                  <td className="px-4 py-3 font-semibold text-misky-700">${unitCost(ing).toFixed(4)}</td>
+                  {canEdit && (
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
+                        <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-misky-600">✏️</button>
+                        <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {filtered.length === 0 && (
