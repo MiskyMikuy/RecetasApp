@@ -3684,6 +3684,11 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-gray-400 leading-none">Total{selected.length > 1 ? ` · ${selected.length} platos` : ""}</p>
                 <p className="font-bold text-lg text-misky-600 leading-tight truncate">${displayTotal.toLocaleString("es-AR")}</p>
+                {!phoneBarOpen && (
+                  <p className="text-xs text-gray-400 truncate mt-0.5">
+                    📞 {cleanPhone ? `+${cleanCode} ${phone}` : "Sin número — se va a compartir"}
+                  </p>
+                )}
               </div>
               <button onClick={() => setPhoneBarOpen(o => !o)}
                 title="Editar número de WhatsApp"
