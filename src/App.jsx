@@ -2579,8 +2579,14 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
       )}
       {modal === "import" && (
         <ImportCSVModal onClose={() => setModal(null)} onImport={async (rows) => {
-          const existing = [...ingredients];
-          for (const row of rows) {
+          // Con archivos grandes (200+ ingredientes), actualizar/crear de a uno
+          // por vez tardaba mucho y daba sensación de que la app se colgaba.
+          // Ahora los nuevos se crean todos juntos en un solo viaje a la base,
+          // y los que ya existían se actualizan de a varios en paralelo.
+          let existing = [...ingredients];
+          const toInsert = [];
+          const toUpdate = [];
+          rows.forEach(row => {
             const cleanRow = {
               name: row.name,
               category: row.category,
@@ -2590,17 +2596,24 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
               waste_pct: row.waste_pct,
             };
             const idx = existing.findIndex(x => x.name.toLowerCase().trim() === row.name.toLowerCase().trim());
-            if (idx !== -1) {
-              const { data, error } = await supabase.from("ingredients").update(cleanRow).eq("id", existing[idx].id).select().single();
-              if (error) console.error("Update error:", error);
-              else if (data) existing[idx] = data;
-            } else {
-              const { data, error } = await supabase.from("ingredients").insert(cleanRow).select().single();
-              if (error) console.error("Insert error:", error);
-              else if (data) existing.push(data);
-            }
+            if (idx !== -1) toUpdate.push({ id: existing[idx].id, cleanRow });
+            else toInsert.push(cleanRow);
+          });
+          if (toInsert.length > 0) {
+            const { data, error } = await supabase.from("ingredients").insert(toInsert).select();
+            if (error) console.error("Insert error:", error);
+            else if (data) existing = [...existing, ...data];
           }
-          setIngredients(existing);
+          const CONCURRENCY = 8;
+          for (let i = 0; i < toUpdate.length; i += CONCURRENCY) {
+            const chunk = toUpdate.slice(i, i + CONCURRENCY);
+            await Promise.all(chunk.map(async ({ id, cleanRow }) => {
+              const { data, error } = await supabase.from("ingredients").update(cleanRow).eq("id", id).select().single();
+              if (error) console.error("Update error:", error);
+              else if (data) existing = existing.map(i2 => i2.id === id ? data : i2);
+            }));
+          }
+          setIngredients(sortByName(existing));
           await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
         }} />
       )}
@@ -2838,6 +2851,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   // agrega, actualiza o elimina según corresponda, creando automáticamente
   // (sin precio ni unidad) los ingredientes que el archivo menciona pero que
   // todavía no existen, para completarlos después desde Ingredientes.
+  // Con archivos grandes (200+ recetas), procesarlas una por una — una receta,
+  // esperar, la siguiente receta, esperar — tardaba varios minutos y daba la
+  // sensación de que la app se quedaba colgada ("Procesando..." sin moverse).
+  // Ahora las recetas nuevas se mandan TODAS juntas en un solo viaje a la base
+  // (y sus ingredientes también, en tandas), y las que ya existían se
+  // actualizan de a varias en paralelo en vez de en fila india.
   const importRecipesCSV = async (rows) => {
     const missingNames = new Map(); // normalizado -> nombre original
     rows.forEach(row => {
@@ -2859,39 +2878,69 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
       }
     }
 
-    for (const row of rows) {
-      if (row.action === "delete") {
-        if (row.existingId) await supabase.from("recipes").delete().eq("id", row.existingId);
-        continue;
+    const linesForRow = (row) => {
+      const allLines = [...row.lines];
+      row.unmatched.forEach(u => {
+        const ing = currentIngredients.find(i => normalizeText(i.name) === normalizeText(u.name));
+        if (ing) allLines.push({ ingredient_id: ing.id, qty: u.qty });
+      });
+      return allLines;
+    };
+    const insertLinesChunked = async (lines) => {
+      const CHUNK = 500;
+      for (let i = 0; i < lines.length; i += CHUNK) {
+        await supabase.from("recipe_ingredients").insert(lines.slice(i, i + CHUNK));
       }
-      const payload = { name: row.name, category: row.category, portions: +row.portions, profit_pct: +row.profit_pct, procedure: row.procedure || "" };
-      let recipeId = row.existingId;
-      if (recipeId) {
-        await updateRecipeSafe(recipeId, payload);
-      } else {
-        const { data } = await insertRecipeSafe(payload);
-        recipeId = data?.id;
+    };
+
+    const toDelete = rows.filter(r => r.action === "delete" && r.existingId).map(r => r.existingId);
+    const toAdd    = rows.filter(r => r.action === "add");
+    const toUpdate = rows.filter(r => r.action === "update");
+
+    if (toDelete.length > 0) {
+      await supabase.from("recipes").delete().in("id", toDelete);
+    }
+
+    if (toAdd.length > 0) {
+      const payloads = toAdd.map(row => ({
+        name: row.name, category: row.category, portions: +row.portions, profit_pct: +row.profit_pct, procedure: row.procedure || "",
+      }));
+      let { data: inserted, error } = await supabase.from("recipes").insert(payloads).select();
+      if (error) {
+        ({ data: inserted, error } = await supabase.from("recipes").insert(payloads.map(({ procedure, ...rest }) => rest)).select());
       }
-      if (recipeId) {
-        await supabase.from("recipe_ingredients").delete().eq("recipe_id", recipeId);
-        const allLines = [...row.lines];
-        row.unmatched.forEach(u => {
-          const ing = currentIngredients.find(i => normalizeText(i.name) === normalizeText(u.name));
-          if (ing) allLines.push({ ingredient_id: ing.id, qty: u.qty });
-        });
-        if (allLines.length > 0) {
-          await supabase.from("recipe_ingredients").insert(
-            allLines.map(l => ({ recipe_id: recipeId, ingredient_id: l.ingredient_id, qty: l.qty }))
-          );
-        }
+      inserted = inserted || [];
+      // Supabase devuelve las filas insertadas en el mismo orden en que se
+      // mandaron, así que se emparejan por posición (más rápido y más simple
+      // que buscar cada una por nombre).
+      const allNewLines = [];
+      toAdd.forEach((row, i) => {
+        const created = inserted[i];
+        if (!created) return;
+        linesForRow(row).forEach(l => allNewLines.push({ recipe_id: created.id, ingredient_id: l.ingredient_id, qty: l.qty }));
+      });
+      await insertLinesChunked(allNewLines);
+    }
+
+    if (toUpdate.length > 0) {
+      const CONCURRENCY = 8;
+      for (let i = 0; i < toUpdate.length; i += CONCURRENCY) {
+        const chunk = toUpdate.slice(i, i + CONCURRENCY);
+        await Promise.all(chunk.map(async row => {
+          const payload = { name: row.name, category: row.category, portions: +row.portions, profit_pct: +row.profit_pct, procedure: row.procedure || "" };
+          await updateRecipeSafe(row.existingId, payload);
+          await supabase.from("recipe_ingredients").delete().eq("recipe_id", row.existingId);
+          const lines = linesForRow(row);
+          if (lines.length > 0) {
+            await insertLinesChunked(lines.map(l => ({ recipe_id: row.existingId, ingredient_id: l.ingredient_id, qty: l.qty })));
+          }
+        }));
       }
     }
+
     const { data: allRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
     setRecipes(sortByName(allRecipes || []));
-    const added = rows.filter(r => r.action === "add").length;
-    const updated = rows.filter(r => r.action === "update").length;
-    const deleted = rows.filter(r => r.action === "delete").length;
-    await logActivity(profile, "import", "recetas", `${added} nuevas, ${updated} actualizadas, ${deleted} eliminadas, ${missingNames.size} ingredientes nuevos sin precio`);
+    await logActivity(profile, "import", "recetas", `${toAdd.length} nuevas, ${toUpdate.length} actualizadas, ${toDelete.length} eliminadas, ${missingNames.size} ingredientes nuevos sin precio`);
   };
 
   const del = async (id, name) => {
