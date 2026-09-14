@@ -1536,7 +1536,7 @@ function AdminPanel({ profile }) {
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button onClick={() => openEdit(u)} className="text-gray-400 hover:text-misky-600 transition-colors">✏️</button>
-                        {u.id !== profile.id && (
+                        {profile.role === "admin" && u.id !== profile.id && (
                           <button onClick={() => deleteUser(u)} className="text-gray-400 hover:text-rose-500 transition-colors">🗑</button>
                         )}
                       </div>
@@ -2178,6 +2178,7 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
 
 function IngredientsTab({ ingredients, setIngredients, profile }) {
   const canEdit = canEditTabPerms(profile, "ingredients");
+  const isAdmin = profile?.role === "admin"; // Borrar (uno o en lote) queda reservado solo a Admin.
   const [modal, setModal]   = useState(null);
   const [search, setSearch] = useState("");
   const [form, setForm]     = useState({});
@@ -2335,7 +2336,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
         <div className="flex items-center gap-3 mb-3 bg-misky-50 border border-misky-100 rounded-xl px-4 py-2.5 flex-wrap">
           <span className="text-sm font-semibold text-misky-700">{selectedIds.size} seleccionados</span>
           <button onClick={() => setModal("batchEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote</button>
-          <button onClick={deleteBatch} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>
+          {isAdmin && <button onClick={deleteBatch} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>}
           <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
         </div>
       )}
@@ -2389,7 +2390,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-misky-600">✏️</button>
-                        <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>
+                        {isAdmin && <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>}
                       </div>
                     </td>
                   )}
@@ -2580,7 +2581,7 @@ function BusinessTab({ business, setBusiness, profile }) {
                 <input type="number" min="0" value={c.amount} disabled={!canEdit} onChange={e => updateCost(c.id, "amount", e.target.value)}
                   className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400 disabled:bg-gray-50" />
               </div>
-              {canEdit && <button onClick={() => delCost(c.id)} className="text-gray-300 hover:text-rose-400 text-lg">🗑</button>}
+              {canEdit && profile?.role === "admin" && <button onClick={() => delCost(c.id)} className="text-gray-300 hover:text-rose-400 text-lg">🗑</button>}
             </div>
           ))}
         </div>
@@ -2937,8 +2938,10 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                     <div className="absolute right-0 top-9 w-44 bg-white rounded-lg shadow-lg border border-gray-100 z-10 py-1">
                       <button onClick={() => { setDetailMenu(false); openDuplicate(recipe); }}
                         className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">📄 Duplicar</button>
-                      <button onClick={() => { setDetailMenu(false); del(recipe.id, recipe.name); }}
-                        className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50">🗑 Eliminar</button>
+                      {profile?.role === "admin" && (
+                        <button onClick={() => { setDetailMenu(false); del(recipe.id, recipe.name); }}
+                          className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50">🗑 Eliminar</button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -3640,7 +3643,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <button onClick={() => downloadRecipesText(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir {selectedCount} receta{selectedCount !== 1 ? "s" : ""}</button>
             <button onClick={() => downloadShoppingListHTML(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
             <button onClick={() => setModal("bulkEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote ({selectedCount})</button>
-            <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>
+            {profile?.role === "admin" && <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>}
           </div>
         </div>
       )}
