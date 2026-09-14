@@ -17,6 +17,38 @@ const PRICE_ROUND_TO = 100;
 function normalizeName(s) {
   return (s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
+// Distancia de Levenshtein (cu\u00e1ntas letras hay que cambiar/agregar/sacar para
+// pasar de un nombre al otro) \u2014 sirve para encontrar ingredientes "parecidos"
+// que la detecci\u00f3n exacta no agarra: singular/plural ("Zanahoria" vs
+// "Zanahorias"), errores de tipeo ("Aceite de oliva" vs "Aceite de oliba"), etc.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], curr[j - 1]);
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+// Umbral de "parecido" seg\u00fan largo del nombre \u2014 nombres cortos toleran menos
+// diferencia (para no marcar "Sal" y "Aj\u00ed" como sospechosos), nombres largos
+// toleran un poco m\u00e1s (para agarrar una palabra extra o un typo de m\u00e1s).
+function isFuzzyMatch(nameA, nameB) {
+  const a = normalizeName(nameA), b = normalizeName(nameB);
+  if (a === b) return false; // eso ya lo agarra la detecci\u00f3n exacta
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen < 4) return false;
+  const dist = levenshtein(a, b);
+  const threshold = maxLen <= 6 ? 1 : maxLen <= 10 ? 2 : 3;
+  return dist <= threshold;
+}
 function unitCost(ing) {
   const base = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
   return ing.waste_pct > 0 ? base / (1 - ing.waste_pct / 100) : base;
@@ -2042,38 +2074,81 @@ function QuickAddIngredientModal({ onClose, onSave }) {
 }
 
 function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, profile }) {
-  const groups = useMemo(() => {
+  // Grupos por nombre EXACTO (ya ignora mayúsculas/acentos) — se detectan solos.
+  const exactGroups = useMemo(() => {
     const map = {};
     ingredients.forEach(i => {
       const key = normalizeName(i.name);
       if (!map[key]) map[key] = [];
       map[key].push(i);
     });
-    return Object.values(map).filter(g => g.length > 1);
+    return Object.entries(map).filter(([, g]) => g.length > 1).map(([key, g]) => ({ key: `exact:${key}`, items: g }));
   }, [ingredients]);
+  const exactIds = useMemo(() => new Set(exactGroups.flatMap(g => g.items.map(i => i.id))), [exactGroups]);
 
-  const [keepMap, setKeepMap] = useState(() => {
-    const m = {};
-    groups.forEach((g, idx) => {
-      const withPrice = g.find(i => i.buy_price > 0);
-      m[idx] = (withPrice || g[0]).id;
-    });
-    return m;
+  // Pares de nombres PARECIDOS (no idénticos) entre los ingredientes que no
+  // están ya en un grupo exacto — se ofrecen para que el usuario confirme uno
+  // por uno si son o no el mismo ingrediente, antes de sumarlos a la fusión.
+  const fuzzyPairs = useMemo(() => {
+    const singles = ingredients.filter(i => !exactIds.has(i.id));
+    const pairs = [];
+    for (let i = 0; i < singles.length; i++) {
+      for (let j = i + 1; j < singles.length; j++) {
+        const a = singles[i], b = singles[j];
+        if (isFuzzyMatch(a.name, b.name)) {
+          pairs.push({ key: `fuzzy:${[a.id, b.id].sort().join(":")}`, items: [a, b] });
+        }
+      }
+    }
+    return pairs;
+  }, [ingredients, exactIds]);
+
+  const [confirmedFuzzyKeys, setConfirmedFuzzyKeys] = useState(() => new Set());
+  const toggleFuzzyConfirm = (key) => setConfirmedFuzzyKeys(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
   });
-  // Datos del ingrediente que queda, editables antes de fusionar por si ninguno
-  // de los duplicados tenía el nombre/unidad/precio bien cargado.
-  const [editMap, setEditMap] = useState(() => {
-    const m = {};
-    groups.forEach((g, idx) => {
-      const withPrice = g.find(i => i.buy_price > 0);
-      const keeper = withPrice || g[0];
-      m[idx] = { name: keeper.name || "", unit: keeper.unit || "", buy_price: keeper.buy_price != null ? String(keeper.buy_price) : "" };
+  const confirmedFuzzyGroups = fuzzyPairs.filter(p => confirmedFuzzyKeys.has(p.key));
+  const pendingFuzzyPairs = fuzzyPairs.filter(p => !confirmedFuzzyKeys.has(p.key));
+
+  const groups = useMemo(() => [...exactGroups, ...confirmedFuzzyGroups], [exactGroups, confirmedFuzzyGroups]);
+
+  const [keepMap, setKeepMap] = useState({});   // key de grupo -> id del ingrediente que queda
+  const [editMap, setEditMap] = useState({});   // key de grupo -> { name, unit, buy_price }
+  // Cada vez que aparece un grupo nuevo (exacto, o parecido recién confirmado)
+  // se le carga un valor por defecto sin pisar los grupos que ya estaban.
+  useEffect(() => {
+    setKeepMap(prev => {
+      const next = { ...prev };
+      let changed = false;
+      groups.forEach(g => {
+        if (!(g.key in next)) {
+          const withPrice = g.items.find(i => i.buy_price > 0);
+          next[g.key] = (withPrice || g.items[0]).id;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
     });
-    return m;
-  });
-  const selectKeeper = (idx, ing) => {
-    setKeepMap(p => ({ ...p, [idx]: ing.id }));
-    setEditMap(p => ({ ...p, [idx]: { name: ing.name || "", unit: ing.unit || "", buy_price: ing.buy_price != null ? String(ing.buy_price) : "" } }));
+    setEditMap(prev => {
+      const next = { ...prev };
+      let changed = false;
+      groups.forEach(g => {
+        if (!(g.key in next)) {
+          const withPrice = g.items.find(i => i.buy_price > 0);
+          const keeper = withPrice || g.items[0];
+          next[g.key] = { name: keeper.name || "", unit: keeper.unit || "", buy_price: keeper.buy_price != null ? String(keeper.buy_price) : "" };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [groups]);
+
+  const selectKeeper = (key, ing) => {
+    setKeepMap(p => ({ ...p, [key]: ing.id }));
+    setEditMap(p => ({ ...p, [key]: { name: ing.name || "", unit: ing.unit || "", buy_price: ing.buy_price != null ? String(ing.buy_price) : "" } }));
   };
   const [merging, setMerging] = useState(false);
   const [done, setDone]       = useState(0);
@@ -2081,10 +2156,9 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, prof
   const mergeAll = async () => {
     setMerging(true);
     let updated = [...ingredients];
-    for (let idx = 0; idx < groups.length; idx++) {
-      const group  = groups[idx];
-      const keepId = keepMap[idx];
-      const edit   = editMap[idx] || {};
+    for (const g of groups) {
+      const keepId = keepMap[g.key];
+      const edit   = editMap[g.key] || {};
       const patch  = {};
       if (edit.name && edit.name.trim() !== "") patch.name = edit.name.trim();
       if (edit.unit && edit.unit.trim() !== "") patch.unit = edit.unit.trim();
@@ -2093,7 +2167,7 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, prof
         await supabase.from("ingredients").update(patch).eq("id", keepId);
         updated = updated.map(i => i.id === keepId ? { ...i, ...patch } : i);
       }
-      const dropIds = group.filter(i => i.id !== keepId).map(i => i.id);
+      const dropIds = g.items.filter(i => i.id !== keepId).map(i => i.id);
       if (dropIds.length === 0) { setDone(d => d + 1); continue; }
       for (const dropId of dropIds) {
         await supabase.from("recipe_ingredients").update({ ingredient_id: keepId }).eq("ingredient_id", dropId);
@@ -2119,66 +2193,95 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, prof
 
   return (
     <Modal title="Fusionar ingredientes duplicados" onClose={onClose} wide>
-      {groups.length === 0 ? (
+      {groups.length === 0 && pendingFuzzyPairs.length === 0 ? (
         <div className="text-center py-8 text-gray-400">
           <div className="text-4xl mb-2">✅</div>
-          <p>No se encontraron nombres duplicados.</p>
+          <p>No se encontraron nombres duplicados ni parecidos.</p>
         </div>
       ) : (
         <div className="space-y-5">
-          <p className="text-sm text-gray-500">
-            Se encontraron {groups.length} grupo{groups.length !== 1 ? "s" : ""} de ingredientes con el mismo nombre.
-            Elegí cuál mantener en cada uno — el resto se borra y las recetas que los usaban pasan a usar el que elegiste.
-          </p>
-          <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
-            {groups.map((group, idx) => {
-              const edit = editMap[idx] || { name: "", unit: "", buy_price: "" };
-              return (
-              <div key={idx} className="border border-gray-100 rounded-xl p-4">
-                <p className="font-semibold text-gray-700 mb-2">{group[0].name}</p>
-                <div className="space-y-1.5">
-                  {group.map(ing => {
-                    const isKeeper = keepMap[idx] === ing.id;
-                    return (
-                    <label key={ing.id}
-                      className={`flex items-start gap-2 text-sm rounded-lg p-2 -mx-2 cursor-pointer ${isKeeper ? "bg-misky-50" : ""}`}>
-                      <input type="radio" name={`grp-${idx}`} checked={isKeeper}
-                        onChange={() => selectKeeper(idx, ing)}
-                        className="accent-misky-500 mt-1" />
-                      {isKeeper ? (
-                        <div className="flex-1 space-y-1.5" onClick={e => e.stopPropagation()}>
-                          <p className="text-xs font-semibold text-misky-700">✓ Este queda — corregí lo que haga falta:</p>
-                          <div className="grid grid-cols-3 gap-1.5">
-                            <input value={edit.name} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], name: e.target.value } }))}
-                              placeholder="Nombre"
-                              className="col-span-3 border border-misky-200 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                            <input value={edit.unit} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], unit: e.target.value } }))}
-                              placeholder="Unidad"
-                              className="border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                            <input value={edit.buy_price} onChange={e => setEditMap(p => ({ ...p, [idx]: { ...p[idx], buy_price: e.target.value.replace(/[^0-9.]/g, "") } }))}
-                              type="number" min="0" placeholder="Precio compra"
-                              className="col-span-2 border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-gray-700">
-                          {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
-                        </span>
-                      )}
-                    </label>
-                    );
-                  })}
-                </div>
+          {groups.length > 0 && (
+            <>
+              <p className="text-sm text-gray-500">
+                Se encontraron {groups.length} grupo{groups.length !== 1 ? "s" : ""} de ingredientes con el mismo nombre (o que confirmaste como parecidos).
+                Elegí cuál mantener en cada uno — el resto se borra y las recetas que los usaban pasan a usar el que elegiste.
+              </p>
+              <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
+                {groups.map((g) => {
+                  const edit = editMap[g.key] || { name: "", unit: "", buy_price: "" };
+                  return (
+                  <div key={g.key} className="border border-gray-100 rounded-xl p-4">
+                    <p className="font-semibold text-gray-700 mb-2">{g.items[0].name}</p>
+                    <div className="space-y-1.5">
+                      {g.items.map(ing => {
+                        const isKeeper = keepMap[g.key] === ing.id;
+                        return (
+                        <label key={ing.id}
+                          className={`flex items-start gap-2 text-sm rounded-lg p-2 -mx-2 cursor-pointer ${isKeeper ? "bg-misky-50" : ""}`}>
+                          <input type="radio" name={`grp-${g.key}`} checked={isKeeper}
+                            onChange={() => selectKeeper(g.key, ing)}
+                            className="accent-misky-500 mt-1" />
+                          {isKeeper ? (
+                            <div className="flex-1 space-y-1.5" onClick={e => e.stopPropagation()}>
+                              <p className="text-xs font-semibold text-misky-700">✓ Este queda — corregí lo que haga falta:</p>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <input value={edit.name} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], name: e.target.value } }))}
+                                  placeholder="Nombre"
+                                  className="col-span-3 border border-misky-200 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                                <input value={edit.unit} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], unit: e.target.value } }))}
+                                  placeholder="Unidad"
+                                  className="border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                                <input value={edit.buy_price} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], buy_price: e.target.value.replace(/[^0-9.]/g, "") } }))}
+                                  type="number" min="0" placeholder="Precio compra"
+                                  className="col-span-2 border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-gray-700">
+                              {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
+                            </span>
+                          )}
+                        </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  );
+                })}
               </div>
-              );
-            })}
-          </div>
-          <div className="flex gap-3 justify-end">
-            <Btn variant="secondary" onClick={onClose} disabled={merging}>Cancelar</Btn>
-            <Btn onClick={mergeAll} disabled={merging}>
-              {merging ? `Fusionando... (${done}/${groups.length})` : `Fusionar ${groups.length} grupo${groups.length !== 1 ? "s" : ""}`}
-            </Btn>
-          </div>
+              <div className="flex gap-3 justify-end">
+                <Btn variant="secondary" onClick={onClose} disabled={merging}>Cancelar</Btn>
+                <Btn onClick={mergeAll} disabled={merging}>
+                  {merging ? `Fusionando... (${done}/${groups.length})` : `Fusionar ${groups.length} grupo${groups.length !== 1 ? "s" : ""}`}
+                </Btn>
+              </div>
+            </>
+          )}
+
+          {pendingFuzzyPairs.length > 0 && (
+            <div className="border-t border-gray-100 pt-4">
+              <p className="text-sm font-semibold text-amber-700 mb-1">🔍 Posibles duplicados por nombre parecido</p>
+              <p className="text-xs text-gray-500 mb-3">
+                Estos nombres no son idénticos, pero se parecen mucho — puede ser el mismo ingrediente mal escrito, o dos cosas distintas. Confirmá solo los que sepas que son el mismo.
+              </p>
+              <div className="space-y-2">
+                {pendingFuzzyPairs.map(p => (
+                  <div key={p.key} className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                    <span className="text-sm text-gray-700">
+                      <strong>{p.items[0].name}</strong> ¿es lo mismo que <strong>{p.items[1].name}</strong>?
+                    </span>
+                    <Btn variant="secondary" onClick={() => toggleFuzzyConfirm(p.key)}>Sí, es el mismo</Btn>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {groups.length === 0 && pendingFuzzyPairs.length > 0 && (
+            <div className="flex justify-end">
+              <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+            </div>
+          )}
         </div>
       )}
     </Modal>
