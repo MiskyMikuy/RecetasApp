@@ -3326,6 +3326,11 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   const [phone, setPhone] = useState(() => {
     try { return localStorage.getItem(COMANDA_PHONE_KEY) || ""; } catch { return ""; }
   });
+  // Barra fija abajo: muestra el total y el botón de enviar sin tener que
+  // bajar hasta el final de la pantalla (con muchos platos o con la sección
+  // de descuento/división abierta, llegar al botón de enviar implicaba
+  // mucho scroll). El teléfono se puede editar ahí mismo, plegado por defecto.
+  const [phoneBarOpen, setPhoneBarOpen] = useState(false);
 
   // Selección hecha en la pestaña Resumen (carrito compartido) — un botón
   // opcional para traerla acá sin tener que volver a tildar todo a mano. No
@@ -3455,8 +3460,10 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
     }
   };
 
+  const displayTotal = puedeCobrar && pct > 0 ? totalConDescuento : total;
+
   return (
-    <div className="space-y-4 max-w-2xl mx-auto">
+    <div className={`space-y-4 max-w-2xl mx-auto ${selected.length > 0 ? "pb-24" : ""}`}>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
         <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar pedido</h2>
         {cartCount > 0 && (
@@ -3610,25 +3617,41 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
             </div>
           )}
 
-          <div className="flex gap-2 items-center pt-1">
-            <div className="w-16">
-              <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
-                placeholder="Cód." title="Código de país (ej: 54 Argentina)"
-                className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
+        </div>
+      )}
+
+      {selected.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-30">
+          <div className="max-w-2xl mx-auto p-3">
+            {phoneBarOpen && (
+              <div className="flex gap-2 mb-2">
+                <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
+                  placeholder="Cód." title="Código de país (ej: 54 Argentina)"
+                  className="w-16 border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                <input value={phone} onChange={e => setPhone(e.target.value)}
+                  placeholder="N° de WhatsApp (opcional)" type="tel"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-gray-400 leading-none">Total{selected.length > 1 ? ` · ${selected.length} platos` : ""}</p>
+                <p className="font-bold text-lg text-misky-600 leading-tight truncate">${displayTotal.toLocaleString("es-AR")}</p>
+              </div>
+              <button onClick={() => setPhoneBarOpen(o => !o)}
+                title="Editar número de WhatsApp"
+                className={`w-10 h-10 flex-shrink-0 rounded-lg border text-lg flex items-center justify-center transition-colors ${phoneBarOpen ? "bg-misky-100 border-misky-300 text-misky-700" : "bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
+                📞
+              </button>
+              <button onClick={openWhatsapp}
+                className="flex-shrink-0 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 whitespace-nowrap transition-colors">
+                📲 {cleanPhone ? "Enviar" : "Compartir"}
+              </button>
+              <button onClick={clearCart} title="Vaciar pedido"
+                className="flex-shrink-0 w-10 h-10 border border-gray-200 rounded-lg text-gray-400 hover:bg-gray-50 hover:text-rose-500 transition-colors">
+                🗑
+              </button>
             </div>
-            <input value={phone} onChange={e => setPhone(e.target.value)}
-              placeholder="N° de WhatsApp (opcional)" type="tel"
-              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-          </div>
-          <div className="flex gap-3">
-            <button onClick={openWhatsapp}
-              className="flex-1 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 text-center transition-colors">
-              📲 {cleanPhone ? "Enviar por WhatsApp" : "Compartir por WhatsApp"}
-            </button>
-            <button onClick={clearCart}
-              className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
-              Limpiar
-            </button>
           </div>
         </div>
       )}
