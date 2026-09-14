@@ -1798,7 +1798,21 @@ function ImportCSVModal({ onClose, onImport }) {
   const [preview, setPreview] = useState([]);
   const [error, setError]     = useState("");
   const [fileName, setFileName] = useState("");
+  // Antes el botón de confirmar pasaba a "listo" apenas se hacía clic, sin
+  // esperar a que la importación terminara de verdad en la base de datos.
+  // Con archivos grandes eso tardaba unos segundos sin ningún aviso en
+  // pantalla, y un segundo clic (o reabrir el modal y volver a importar el
+  // mismo archivo por las dudas) hacía que todo se subiera duplicado. Ahora
+  // se deshabilita y muestra "Procesando..." hasta que termina de verdad.
+  const [importing, setImporting] = useState(false);
   const fileRef = useRef();
+
+  const doImport = async () => {
+    setImporting(true);
+    await onImport(preview);
+    setImporting(false);
+    setStep("done");
+  };
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -1885,8 +1899,8 @@ function ImportCSVModal({ onClose, onImport }) {
             </table>
           </div>
           <div className="flex gap-3 justify-end">
-            <Btn variant="secondary" onClick={()=>{setStep("upload");setPreview([]);setFileName("");}}>← Volver</Btn>
-            <Btn onClick={()=>{onImport(preview);setStep("done");}}>✓ Importar {preview.length} ingredientes</Btn>
+            <Btn variant="secondary" onClick={()=>{setStep("upload");setPreview([]);setFileName("");}} disabled={importing}>← Volver</Btn>
+            <Btn onClick={doImport} disabled={importing}>{importing ? "Procesando..." : `✓ Importar ${preview.length} ingredientes`}</Btn>
           </div>
         </div>
       )}
@@ -3443,18 +3457,19 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   });
   const sinAsignar = total - personaSubtotals.reduce((s, p) => s + p.sub, 0);
 
+  // Formato calcado del mensaje que Andrés ya escribía a mano por WhatsApp
+  // (sin nombrar la app, saludo simple, "Nombre xN ($precio c/u): $subtotal")
+  // en vez del encabezado "Pedido RecetApp" que tenía antes.
   const whatsappText = () => {
-    let txt = "🧾 *Pedido RecetApp*\n\n";
+    let txt = "Hola! Te paso el detalle:\n\n";
     selected.forEach(r => {
       const c = calcRecipe(r, ingredients, business);
       const qty = items[r.id];
-      // Muestra el precio unitario siempre, además del subtotal de la línea
-      // (si es 1 unidad, subtotal y unitario coinciden y no se repite).
       const unit = `$${c.roundedPrice.toLocaleString("es-AR")}`;
       const lineTotal = `$${(c.roundedPrice * qty).toLocaleString("es-AR")}`;
       txt += qty > 1
-        ? `• ${qty}x ${r.name} — ${unit} c/u — ${lineTotal}\n`
-        : `• ${qty}x ${r.name} — ${lineTotal}\n`;
+        ? `• ${r.name} x${qty} (${unit} c/u): ${lineTotal}\n`
+        : `• ${r.name}: ${lineTotal}\n`;
     });
     if (puedeCobrar && splitMode && personaSubtotals.some(p => p.sub > 0)) {
       txt += `\nSubtotal: $${total.toLocaleString("es-AR")}`;
@@ -3463,14 +3478,14 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
       personaSubtotals.filter(p => p.sub > 0).forEach(p => {
         txt += `\n• ${p.name}: $${p.pay.toLocaleString("es-AR")}`;
       });
-      txt += `\n\n*TOTAL: $${totalConDescuento.toLocaleString("es-AR")}*`;
+      txt += `\n\n*Total: $${totalConDescuento.toLocaleString("es-AR")}*`;
     } else {
       if (puedeCobrar && pct > 0) {
         txt += `\nSubtotal: $${total.toLocaleString("es-AR")}`;
         txt += `\nDescuento (${pct}%): -$${discountAmount.toLocaleString("es-AR")}`;
-        txt += `\n\n*TOTAL: $${totalConDescuento.toLocaleString("es-AR")}*`;
+        txt += `\n\n*Total: $${totalConDescuento.toLocaleString("es-AR")}*`;
       } else {
-        txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
+        txt += `\n*Total: $${total.toLocaleString("es-AR")}*`;
       }
     }
     return encodeURIComponent(txt);
