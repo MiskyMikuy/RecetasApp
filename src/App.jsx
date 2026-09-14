@@ -3345,6 +3345,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 // ─── COMANDA TAB (MOZO) ───────────────────────────────────────────────────────
 const COMANDA_STORAGE_KEY = "recetapp_comanda_cart";
 const COMANDA_PHONE_KEY   = "recetapp_comanda_phone";
+const COMANDA_LABEL_KEY   = "recetapp_comanda_cliente";
 
 // Referencia (fuera del componente, así no se pierde al cambiar de pestaña
 // dentro de la app) a la pestaña de WhatsApp que se abrió la última vez desde
@@ -3372,11 +3373,19 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   const [phone, setPhone] = useState(() => {
     try { return localStorage.getItem(COMANDA_PHONE_KEY) || ""; } catch { return ""; }
   });
+  // Nombre del cliente (o mesa) para personalizar el saludo del mensaje —
+  // se precarga con la etiqueta puesta en Resumen si se usa "Usar selección",
+  // pero también se puede escribir/editar acá directamente.
+  const [clientLabel, setClientLabel] = useState(() => {
+    try { return localStorage.getItem(COMANDA_LABEL_KEY) || ""; } catch { return ""; }
+  });
   // Barra fija abajo: muestra el total y el botón de enviar sin tener que
   // bajar hasta el final de la pantalla (con muchos platos o con la sección
   // de descuento/división abierta, llegar al botón de enviar implicaba
-  // mucho scroll). El teléfono se puede editar ahí mismo, plegado por defecto.
+  // mucho scroll). El teléfono y el cliente se pueden editar ahí mismo,
+  // plegado por defecto.
   const [phoneBarOpen, setPhoneBarOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Selección hecha en la pestaña Resumen (carrito compartido) — un botón
   // opcional para traerla acá sin tener que volver a tildar todo a mano. No
@@ -3390,6 +3399,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
       });
       return next;
     });
+    if (cartLabel) setClientLabel(cartLabel);
   };
 
   useEffect(() => {
@@ -3398,6 +3408,9 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   useEffect(() => {
     try { localStorage.setItem(COMANDA_PHONE_KEY, phone); } catch {}
   }, [phone]);
+  useEffect(() => {
+    try { localStorage.setItem(COMANDA_LABEL_KEY, clientLabel); } catch {}
+  }, [clientLabel]);
 
   const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
   const setQty = (id, val) => {
@@ -3459,9 +3472,13 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
 
   // Formato calcado del mensaje que Andrés ya escribía a mano por WhatsApp
   // (sin nombrar la app, saludo simple, "Nombre xN ($precio c/u): $subtotal")
-  // en vez del encabezado "Pedido RecetApp" que tenía antes.
-  const whatsappText = () => {
-    let txt = "Hola! Te paso el detalle:\n\n";
+  // en vez del encabezado "Pedido RecetApp" que tenía antes. buildMessage()
+  // devuelve el texto plano (para copiar); whatsappText() lo codifica para
+  // el link de wa.me.
+  const buildMessage = () => {
+    let txt = clientLabel.trim()
+      ? `Hola ${clientLabel.trim()}! Te paso el detalle:\n\n`
+      : "Hola! Te paso el detalle:\n\n";
     selected.forEach(r => {
       const c = calcRecipe(r, ingredients, business);
       const qty = items[r.id];
@@ -3488,8 +3505,9 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
         txt += `\n*Total: $${total.toLocaleString("es-AR")}*`;
       }
     }
-    return encodeURIComponent(txt);
+    return txt;
   };
+  const whatsappText = () => encodeURIComponent(buildMessage());
   const cleanPhone = phone.replace(/\D/g, "");
   const cleanCode  = countryCode.replace(/\D/g, "");
   const openWhatsapp = () => {
@@ -3505,6 +3523,28 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
     } else {
       comandaWaWindow = window.open(url, "recetapp_whatsapp");
     }
+  };
+  // Copia el mensaje tal cual (sin abrir WhatsApp) para poder pegarlo en
+  // otro lado — por ejemplo, hasta que haya una integración directa con
+  // comandera/facturación, así no depende de WhatsApp para nada.
+  const copyMessage = async () => {
+    const text = buildMessage();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Alternativa si el navegador no permite el portapapeles directo
+      // (por ejemplo, sin conexión https o permisos denegados).
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand("copy"); } catch {}
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
 
   const displayTotal = puedeCobrar && pct > 0 ? totalConDescuento : total;
@@ -3671,13 +3711,18 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-30">
           <div className="max-w-2xl mx-auto p-3">
             {phoneBarOpen && (
-              <div className="flex gap-2 mb-2">
-                <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
-                  placeholder="Cód." title="Código de país (ej: 54 Argentina)"
-                  className="w-16 border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                <input value={phone} onChange={e => setPhone(e.target.value)}
-                  placeholder="N° de WhatsApp (opcional)" type="tel"
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+              <div className="space-y-2 mb-2">
+                <input value={clientLabel} onChange={e => setClientLabel(e.target.value)}
+                  placeholder="Nombre del cliente (opcional)"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                <div className="flex gap-2">
+                  <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
+                    placeholder="Cód." title="Código de país (ej: 54 Argentina)"
+                    className="w-16 border border-gray-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                  <input value={phone} onChange={e => setPhone(e.target.value)}
+                    placeholder="N° de WhatsApp (opcional)" type="tel"
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                </div>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -3686,14 +3731,19 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
                 <p className="font-bold text-lg text-misky-600 leading-tight truncate">${displayTotal.toLocaleString("es-AR")}</p>
                 {!phoneBarOpen && (
                   <p className="text-xs text-gray-400 truncate mt-0.5">
-                    📞 {cleanPhone ? `+${cleanCode} ${phone}` : "Sin número — se va a compartir"}
+                    {clientLabel.trim() && `👤 ${clientLabel.trim()} · `}
+                    📞 {cleanPhone ? `+${cleanCode} ${phone}` : "sin número — se va a compartir"}
                   </p>
                 )}
               </div>
               <button onClick={() => setPhoneBarOpen(o => !o)}
-                title="Editar número de WhatsApp"
+                title="Editar cliente y número de WhatsApp"
                 className={`w-10 h-10 flex-shrink-0 rounded-lg border text-lg flex items-center justify-center transition-colors ${phoneBarOpen ? "bg-misky-100 border-misky-300 text-misky-700" : "bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
                 📞
+              </button>
+              <button onClick={copyMessage} title="Copiar mensaje"
+                className={`w-10 h-10 flex-shrink-0 rounded-lg border text-lg flex items-center justify-center transition-colors ${copied ? "bg-green-50 border-green-300 text-green-600" : "bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100"}`}>
+                {copied ? "✓" : "📋"}
               </button>
               <button onClick={openWhatsapp}
                 className="flex-shrink-0 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 whitespace-nowrap transition-colors">
