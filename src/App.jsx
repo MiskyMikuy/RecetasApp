@@ -1211,6 +1211,22 @@ const PRESETS = {
       es_mozo: true,
     }
   },
+  cajero: {
+    label: "💰 Cajero", color: "emerald",
+    perms: {
+      // Como Mozo (solo ve la pestaña Pedido, nada de recetas/ingredientes/
+      // costos), pero además puede aplicar descuento y dividir el pago por
+      // persona antes de mandar el comprobante (es_cajero habilita esa parte
+      // dentro de la pestaña Pedido).
+      dashboard:   makeGroups("dashboard", false, false),
+      recipes:     { basicos: makeTabPerms(true,false), ingredientes: makeTabPerms(false,false), costos: makeTabPerms(false,false), precio_sugerido: makeTabPerms(false,false), precio_redondeado: makeTabPerms(true,false), ganancia: makeTabPerms(false,false) },
+      ingredients: makeGroups("ingredients", false, false),
+      business:    makeGroups("business", false, false),
+      usuarios: false,
+      es_mozo: true,
+      es_cajero: true,
+    }
+  },
   cliente: {
     label: "🛒 Cliente", color: "violet",
     perms: {
@@ -1288,7 +1304,7 @@ const getVisibleTabIds = (profile) => {
   if (!esMozo && canSeeTabPerms(profile, "dashboard"))   ids.push("dashboard");
   if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("recipes");
   if (!esMozo && canSeeTabPerms(profile, "ingredients")) ids.push("ingredients");
-  if (esMozo) ids.push("comanda");
+  if (esMozo || profile?.role === "admin") ids.push("comanda");
   if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("miseenplace");
   if ((!esMozo && canSeeTabPerms(profile, "business")) || profile?.permissions?.usuarios === true) ids.push("settings");
   return ids;
@@ -3126,7 +3142,15 @@ const COMANDA_PHONE_KEY   = "recetapp_comanda_phone";
 // abierta, cada "Compartir por WhatsApp" la reutiliza en vez de abrir otra.
 let comandaWaWindow = null;
 
-function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLabel }) {
+function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatch, cartLabel }) {
+  // Solo Admin o Cajero pueden aplicar descuento y dividir el pago antes de
+  // mandar el comprobante — el Mozo solo arma el pedido, sin tocar el cobro.
+  const puedeCobrar = profile?.role === "admin" || profile?.permissions?.es_cajero === true;
+  const [discountPct, setDiscountPct] = useState("0");
+  const [splitMode, setSplitMode] = useState(false);
+  const [personas, setPersonas] = useState(["Persona 1", "Persona 2"]);
+  const [assign, setAssign] = useState({}); // { "recipeId:personaIdx": cantidad }
+
   const [items, setItems] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(COMANDA_STORAGE_KEY) || "{}");
@@ -3166,6 +3190,9 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
   };
   const clearCart = () => {
     setItems({});
+    setDiscountPct("0");
+    setSplitMode(false);
+    setAssign({});
     try { localStorage.removeItem(COMANDA_STORAGE_KEY); } catch {}
   };
   const selected = recipes.filter(r => (items[r.id] || 0) > 0);
@@ -3174,8 +3201,48 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
     return s + c.roundedPrice * (items[r.id] || 1);
   }, 0);
 
+  const pct = Math.min(100, Math.max(0, +discountPct || 0));
+  const discountAmount = total * (pct / 100);
+  const totalConDescuento = total - discountAmount;
+
+  // División por persona: para cada línea del pedido, cuánto de esa cantidad
+  // le corresponde a cada persona (según lo que pidió/comió cada una) — no a
+  // partes iguales. Lo que no se reparte queda "sin asignar" y no se cobra a
+  // nadie en particular, para que quede a la vista si falta repartir algo.
+  const addPersona = () => setPersonas(p => [...p, `Persona ${p.length + 1}`]);
+  const removePersona = (idx) => {
+    setPersonas(p => p.filter((_, i) => i !== idx));
+    setAssign(prev => {
+      const next = {};
+      Object.entries(prev).forEach(([key, v]) => {
+        const [rid, pIdx0] = key.split(":");
+        const pIdx = +pIdx0;
+        if (pIdx === idx) return;
+        next[`${rid}:${pIdx > idx ? pIdx - 1 : pIdx}`] = v;
+      });
+      return next;
+    });
+  };
+  const renamePersona = (idx, name) => setPersonas(p => p.map((n, i) => i === idx ? name : n));
+  const setAssignQty = (recipeId, personaIdx, val) => {
+    const n = Math.max(0, parseInt(val) || 0);
+    setAssign(prev => ({ ...prev, [`${recipeId}:${personaIdx}`]: n }));
+  };
+  const assignedForLine = (recipeId) => personas.reduce((s, _, idx) => s + (assign[`${recipeId}:${idx}`] || 0), 0);
+
+  const personaSubtotals = personas.map((name, idx) => {
+    const sub = selected.reduce((s, r) => {
+      const c = calcRecipe(r, ingredients, business);
+      const qty = assign[`${r.id}:${idx}`] || 0;
+      return s + c.roundedPrice * qty;
+    }, 0);
+    const disc = sub * (pct / 100);
+    return { name, sub, disc, pay: sub - disc };
+  });
+  const sinAsignar = total - personaSubtotals.reduce((s, p) => s + p.sub, 0);
+
   const whatsappText = () => {
-    let txt = "🧾 *Comanda RecetApp*\n\n";
+    let txt = "🧾 *Pedido RecetApp*\n\n";
     selected.forEach(r => {
       const c = calcRecipe(r, ingredients, business);
       const qty = items[r.id];
@@ -3187,7 +3254,23 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
         ? `• ${qty}x ${r.name} — ${unit} c/u — ${lineTotal}\n`
         : `• ${qty}x ${r.name} — ${lineTotal}\n`;
     });
-    txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
+    if (puedeCobrar && splitMode && personaSubtotals.some(p => p.sub > 0)) {
+      txt += `\nSubtotal: $${total.toLocaleString("es-AR")}`;
+      if (pct > 0) txt += `\nDescuento (${pct}%): -$${discountAmount.toLocaleString("es-AR")}`;
+      txt += `\n\n*División por persona:*`;
+      personaSubtotals.filter(p => p.sub > 0).forEach(p => {
+        txt += `\n• ${p.name}: $${p.pay.toLocaleString("es-AR")}`;
+      });
+      txt += `\n\n*TOTAL: $${totalConDescuento.toLocaleString("es-AR")}*`;
+    } else {
+      if (puedeCobrar && pct > 0) {
+        txt += `\nSubtotal: $${total.toLocaleString("es-AR")}`;
+        txt += `\nDescuento (${pct}%): -$${discountAmount.toLocaleString("es-AR")}`;
+        txt += `\n\n*TOTAL: $${totalConDescuento.toLocaleString("es-AR")}*`;
+      } else {
+        txt += `\n*TOTAL: $${total.toLocaleString("es-AR")}*`;
+      }
+    }
     return encodeURIComponent(txt);
   };
   const cleanPhone = phone.replace(/\D/g, "");
@@ -3210,7 +3293,7 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-        <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar comanda</h2>
+        <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar pedido</h2>
         {cartCount > 0 && (
           <button onClick={useCartSelection}
             className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-sm mb-4 hover:bg-amber-100 transition-colors">
@@ -3264,10 +3347,104 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
               </div>
             );
           })}
-          <div className="flex justify-between border-t border-gray-100 pt-3 font-bold text-lg">
-            <span>TOTAL</span>
-            <span className="text-misky-600">${total.toLocaleString("es-AR")}</span>
-          </div>
+          {puedeCobrar && pct > 0 ? (
+            <>
+              <div className="flex justify-between border-t border-gray-100 pt-3 text-sm text-gray-500">
+                <span>Subtotal</span>
+                <span>${total.toLocaleString("es-AR")}</span>
+              </div>
+              <div className="flex justify-between text-sm text-rose-500">
+                <span>Descuento ({pct}%)</span>
+                <span>-${discountAmount.toLocaleString("es-AR")}</span>
+              </div>
+              <div className="flex justify-between font-bold text-lg">
+                <span>TOTAL</span>
+                <span className="text-misky-600">${totalConDescuento.toLocaleString("es-AR")}</span>
+              </div>
+            </>
+          ) : (
+            <div className="flex justify-between border-t border-gray-100 pt-3 font-bold text-lg">
+              <span>TOTAL</span>
+              <span className="text-misky-600">${total.toLocaleString("es-AR")}</span>
+            </div>
+          )}
+
+          {puedeCobrar && (
+            <div className="border-t border-gray-100 pt-3 space-y-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">💰 Cerrar y cobrar</p>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600 flex-shrink-0">Descuento</label>
+                <input value={discountPct} onChange={e => setDiscountPct(e.target.value.replace(/[^0-9.]/g, ""))}
+                  type="number" min="0" max="100" placeholder="0"
+                  className="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                <span className="text-sm text-gray-500">%</span>
+                <label className="flex items-center gap-1.5 text-sm text-gray-600 ml-auto cursor-pointer">
+                  <input type="checkbox" checked={splitMode} onChange={e => setSplitMode(e.target.checked)}
+                    className="w-4 h-4 accent-misky-500" />
+                  Dividir por persona
+                </label>
+              </div>
+
+              {splitMode && (
+                <div className="bg-gray-50 rounded-lg p-3 space-y-3">
+                  <p className="text-xs text-gray-500">Para cada plato, poné cuántas unidades le tocan a cada persona (según lo que pidió o comió cada una).</p>
+                  <div className="space-y-2">
+                    {personas.map((name, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input value={name} onChange={e => renamePersona(idx, e.target.value)}
+                          className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                        {personas.length > 1 && (
+                          <button onClick={() => removePersona(idx)} className="text-gray-400 hover:text-rose-500 text-xs">✕</button>
+                        )}
+                      </div>
+                    ))}
+                    <button onClick={addPersona} className="text-xs text-misky-600 hover:text-misky-700 font-medium">+ Agregar persona</button>
+                  </div>
+                  <div className="space-y-3 pt-2 border-t border-gray-200">
+                    {selected.map(r => {
+                      const qty = items[r.id];
+                      const asignado = assignedForLine(r.id);
+                      return (
+                        <div key={r.id}>
+                          <div className="flex items-center justify-between text-sm mb-1">
+                            <span className="text-gray-700 font-medium">{qty}× {r.name}</span>
+                            <span className={`text-xs ${asignado === qty ? "text-green-600" : "text-amber-500"}`}>
+                              asignado: {asignado}/{qty}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {personas.map((name, idx) => (
+                              <div key={idx} className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-2 py-1">
+                                <span className="text-xs text-gray-500">{name}:</span>
+                                <input type="number" min="0" value={assign[`${r.id}:${idx}`] || 0}
+                                  onChange={e => setAssignQty(r.id, idx, e.target.value)}
+                                  className="w-12 text-center text-sm focus:outline-none" />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="space-y-1.5 pt-2 border-t border-gray-200">
+                    {personaSubtotals.map((p, idx) => p.sub > 0 && (
+                      <div key={idx} className="flex justify-between text-sm">
+                        <span className="text-gray-600">{p.name}</span>
+                        <span className="font-semibold text-misky-700">${p.pay.toLocaleString("es-AR")}</span>
+                      </div>
+                    ))}
+                    {sinAsignar > 0.01 && (
+                      <div className="flex justify-between text-xs text-amber-500 pt-1">
+                        <span>Sin asignar a nadie todavía</span>
+                        <span>${sinAsignar.toLocaleString("es-AR")}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex gap-2 items-center pt-1">
             <div className="w-16">
               <input value={countryCode} onChange={e => setCountryCode(e.target.value)}
@@ -3836,7 +4013,7 @@ export default function App() {
     { id:"dashboard",   label:"📊 Resumen",       show: !esMozo && canSeeTab("dashboard") },
     { id:"recipes",     label:"🍽️ Recetas",       show: !esMozo && canSeeTab("recipes") },
     { id:"ingredients", label:"📦 Ingredientes",   show: !esMozo && canSeeTab("ingredients") },
-    { id:"comanda",     label:"🧾 Comanda",        show: esMozo },
+    { id:"comanda",     label:"🧾 Pedido",         show: esMozo || profile?.role === "admin" },
     { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
     { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
