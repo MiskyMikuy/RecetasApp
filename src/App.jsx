@@ -2041,7 +2041,7 @@ function QuickAddIngredientModal({ onClose, onSave }) {
   );
 }
 
-function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
+function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, profile }) {
   const groups = useMemo(() => {
     const map = {};
     ingredients.forEach(i => {
@@ -2101,6 +2101,15 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
       await supabase.from("ingredients").delete().in("id", dropIds);
       updated = updated.filter(i => !dropIds.includes(i.id));
       setDone(d => d + 1);
+    }
+    // Las recetas que usaban los duplicados ya quedaron bien reasignadas en la
+    // base de datos (arriba), pero la lista de recetas que la app tiene
+    // cargada en memoria todavía apunta a los ingredientes viejos que recién
+    // borramos. Sin este refresco, hasta que no se recargue la página, las
+    // recetas afectadas saldrían incompletas al verlas o al bajar el CSV.
+    if (setRecipes) {
+      const { data: freshRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
+      if (freshRecipes) setRecipes(sortByName(freshRecipes));
     }
     await logActivity(profile, "merge", "ingredientes", groups.length + " grupo(s) fusionados");
     setMerging(false);
@@ -2176,7 +2185,7 @@ function MergeDuplicatesModal({ ingredients, onClose, onMerged, profile }) {
   );
 }
 
-function IngredientsTab({ ingredients, setIngredients, profile }) {
+function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
   const canEdit = canEditTabPerms(profile, "ingredients");
   const isAdmin = profile?.role === "admin"; // Borrar (uno o en lote) queda reservado solo a Admin.
   const [modal, setModal]   = useState(null);
@@ -2461,6 +2470,7 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
           ingredients={ingredients}
           onClose={() => setModal(null)}
           onMerged={(updatedIngredients) => { setIngredients(updatedIngredients); }}
+          setRecipes={setRecipes}
           profile={profile}
         />
       )}
@@ -4071,7 +4081,7 @@ export default function App() {
                                      cartSel={cartSel} setCartSel={setCartSel} cartBatch={cartBatch} setCartBatch={setCartBatch}
                                      cartLabel={cartLabel} setCartLabel={setCartLabel} />}
         {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
-        {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} profile={profile} />}
+        {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} setRecipes={setRecipes} profile={profile} />}
         {tab === "settings"    && <SettingsTab business={business} setBusiness={setBusiness} profile={profile} canSeeCosts={canSeeTab("business")} />}
         {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile}
                                      cartSel={cartSel} cartBatch={cartBatch} cartLabel={cartLabel} />}
