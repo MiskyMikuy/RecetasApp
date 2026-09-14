@@ -1279,10 +1279,9 @@ const getVisibleTabIds = (profile) => {
   if (!esMozo && canSeeTabPerms(profile, "dashboard"))   ids.push("dashboard");
   if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("recipes");
   if (!esMozo && canSeeTabPerms(profile, "ingredients")) ids.push("ingredients");
-  if (!esMozo && canSeeTabPerms(profile, "business"))    ids.push("business");
   if (esMozo) ids.push("comanda");
   if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("miseenplace");
-  if (profile?.permissions?.usuarios === true)           ids.push("admin");
+  if ((!esMozo && canSeeTabPerms(profile, "business")) || profile?.permissions?.usuarios === true) ids.push("settings");
   return ids;
 };
 
@@ -1299,14 +1298,15 @@ const FULL_PERMS = PRESETS.admin.perms;
 function AdminPanel({ profile }) {
   const [users, setUsers]       = useState([]);
   const [logs, setLogs]         = useState([]);
+  const [pendingInvites, setPendingInvites] = useState([]);
   const [modal, setModal]       = useState(null);
   const [selected, setSelected] = useState(null);
-  const emptyForm = { email: "", username: "", password: "", phone: "", role: "custom", permissions: DEFAULT_PERMS };
+  const emptyForm = { email: "", username: "", password: "", phone: "", role: "custom", permissions: DEFAULT_PERMS, accountType: "google" };
   const [form, setForm]         = useState(emptyForm);
   const [msg, setMsg]           = useState("");
   const [tab, setTab]           = useState("users");
 
-  useEffect(() => { loadUsers(); loadLogs(); }, []);
+  useEffect(() => { loadUsers(); loadLogs(); loadPending(); }, []);
 
   const loadUsers = async () => {
     const { data } = await supabase.from("profiles").select("*").order("created_at");
@@ -1315,6 +1315,36 @@ function AdminPanel({ profile }) {
   const loadLogs = async () => {
     const { data } = await supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(100);
     setLogs(data || []);
+  };
+  const loadPending = async () => {
+    const { data } = await supabase.from("pending_users").select("*").order("created_at");
+    setPendingInvites(data || []);
+  };
+
+  // Invita a alguien a entrar con su cuenta de Google (sin contraseña). Queda
+  // "pendiente" hasta que esa persona haga su primer login con Google — ahí
+  // loadProfile() la vincula sola con esta invitación.
+  const inviteGoogleUser = async () => {
+    setMsg("");
+    if (!form.email || !form.username) return setMsg("Completá email y nombre.");
+    const email = form.email.trim().toLowerCase();
+    if (!email.includes("@")) return setMsg("Ingresá un email válido.");
+
+    const perms = form.role === "admin" ? FULL_PERMS : form.permissions;
+    const { error } = await supabase.from("pending_users").upsert({
+      email, username: form.username, phone: form.phone || null, role: form.role, permissions: perms,
+    });
+    if (error) return setMsg("Error: " + error.message);
+
+    await logActivity(profile, "invite", "usuario", form.username);
+    setMsg("✅ Invitación creada. Ya puede entrar con su cuenta de Google.");
+    await loadPending();
+    setTimeout(() => { setModal(null); setMsg(""); }, 1500);
+  };
+
+  const cancelInvite = async (email) => {
+    await supabase.from("pending_users").delete().eq("email", email);
+    await loadPending();
   };
 
   // Crear usuario via Edge Function (usa service role key de forma segura)
@@ -1492,6 +1522,23 @@ function AdminPanel({ profile }) {
             </table>
             {users.length === 0 && <div className="text-center py-10 text-gray-400">Sin usuarios aún</div>}
           </div>
+
+          {pendingInvites.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <p className="text-sm font-semibold text-amber-800 mb-3">⏳ Invitaciones pendientes (esperando primer login con Google)</p>
+              <div className="space-y-2">
+                {pendingInvites.map(inv => (
+                  <div key={inv.email} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 text-sm">
+                    <div>
+                      <span className="font-medium text-gray-800">{inv.username}</span>
+                      <span className="text-gray-400 ml-2">{inv.email}</span>
+                    </div>
+                    <button onClick={() => cancelInvite(inv.email)} className="text-gray-400 hover:text-rose-500 text-xs">Cancelar</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1544,6 +1591,18 @@ function AdminPanel({ profile }) {
         <Modal title={modal === "newUser" ? "Nuevo usuario" : `Editar: ${selected?.username}`} onClose={() => setModal(null)} wide>
           <div className="space-y-4">
             {modal === "newUser" && (
+              <div className="flex gap-2">
+                <button onClick={() => setForm(p => ({ ...p, accountType: "google" }))}
+                  className={`flex-1 text-sm px-3 py-2 rounded-lg border transition-colors ${form.accountType === "google" ? "bg-misky-100 border-misky-400 text-misky-700 font-semibold" : "border-gray-300 text-gray-500"}`}>
+                  🔵 Cuenta de Google
+                </button>
+                <button onClick={() => setForm(p => ({ ...p, accountType: "password" }))}
+                  className={`flex-1 text-sm px-3 py-2 rounded-lg border transition-colors ${form.accountType === "password" ? "bg-misky-100 border-misky-400 text-misky-700 font-semibold" : "border-gray-300 text-gray-500"}`}>
+                  🔑 Usuario y contraseña
+                </button>
+              </div>
+            )}
+            {modal === "newUser" && (
               <Field label="Email">
                 <TextInput value={form.email} onChange={e => setForm(p=>({...p, email: e.target.value}))} type="email" placeholder="usuario@email.com" />
               </Field>
@@ -1556,10 +1615,15 @@ function AdminPanel({ profile }) {
                 <TextInput value={form.phone} onChange={e => setForm(p=>({...p, phone: e.target.value}))} placeholder="+5493511234567" />
               </Field>
             </div>
-            {modal === "newUser" && (
+            {modal === "newUser" && form.accountType === "password" && (
               <Field label="Contraseña (mín. 6 caracteres)">
                 <TextInput value={form.password} onChange={e => setForm(p=>({...p, password: e.target.value}))} type="password" placeholder="••••••••" />
               </Field>
+            )}
+            {modal === "newUser" && form.accountType === "google" && (
+              <p className="text-xs text-misky-700 bg-misky-50 px-3 py-2 rounded-lg">
+                No hace falta contraseña: la persona va a entrar con "Continuar con Google" usando la cuenta de Gmail que pusiste arriba. Va a ver un aviso de "Google no verificó esta app" la primera vez — es normal, tiene que tocar Avanzado → Ir a RecetApp para continuar.
+              </p>
             )}
 
             {/* Permisos granulares — solo admin puede asignar */}
@@ -1658,8 +1722,8 @@ function AdminPanel({ profile }) {
             {msg && <p className={`text-sm px-3 py-2 rounded-lg ${msg.startsWith("✅") ? "bg-misky-50 text-misky-700" : "bg-rose-50 text-rose-600"}`}>{msg}</p>}
             <div className="flex gap-3 justify-end">
               <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
-              <Btn onClick={modal === "newUser" ? createUser : updateUser}>
-                {modal === "newUser" ? "Crear usuario" : "Guardar cambios"}
+              <Btn onClick={modal === "newUser" ? (form.accountType === "google" ? inviteGoogleUser : createUser) : updateUser}>
+                {modal === "newUser" ? (form.accountType === "google" ? "Enviar invitación" : "Crear usuario") : "Guardar cambios"}
               </Btn>
             </div>
           </div>
@@ -2325,6 +2389,45 @@ function IngredientsTab({ ingredients, setIngredients, profile }) {
   );
 }
 
+// ─── AJUSTES (Costos + Usuarios agrupados) ────────────────────────────────────
+// Antes eran dos pestañas sueltas en el menú principal; ahora viven juntas
+// acá adentro, con un submenú tipo "lista → detalle" (como en RecetApp SA).
+function SettingsTab({ business, setBusiness, profile, canSeeCosts }) {
+  const [section, setSection] = useState(null); // null | "costos" | "usuarios"
+  const canUsers = profile?.permissions?.usuarios === true;
+
+  if (section) {
+    return (
+      <div>
+        <button onClick={() => setSection(null)} className="mb-4 text-sm text-misky-600 hover:text-misky-700 font-medium flex items-center gap-1">
+          ‹ Ajustes
+        </button>
+        {section === "costos" && <BusinessTab business={business} setBusiness={setBusiness} profile={profile} />}
+        {section === "usuarios" && <AdminPanel profile={profile} />}
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto bg-white rounded-xl shadow-sm border border-gray-100 divide-y divide-gray-100 overflow-hidden">
+      {canSeeCosts && (
+        <button onClick={() => setSection("costos")}
+          className="w-full flex items-center justify-between px-4 py-4 hover:bg-gray-50 transition-colors">
+          <span className="flex items-center gap-3 text-gray-800 font-medium"><span className="text-lg">⚙️</span> Costos</span>
+          <span className="text-gray-300 text-lg">›</span>
+        </button>
+      )}
+      {canUsers && (
+        <button onClick={() => setSection("usuarios")}
+          className="w-full flex items-center justify-between px-4 py-4 hover:bg-gray-50 transition-colors">
+          <span className="flex items-center gap-3 text-gray-800 font-medium"><span className="text-lg">👥</span> Usuarios</span>
+          <span className="text-gray-300 text-lg">›</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── BUSINESS ─────────────────────────────────────────────────────────────────
 function BusinessTab({ business, setBusiness, profile }) {
   const canEdit = canEditTabPerms(profile, "business");
@@ -2927,6 +3030,13 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
 const COMANDA_STORAGE_KEY = "recetapp_comanda_cart";
 const COMANDA_PHONE_KEY   = "recetapp_comanda_phone";
 
+// Referencia (fuera del componente, así no se pierde al cambiar de pestaña
+// dentro de la app) a la pestaña de WhatsApp que se abrió la última vez desde
+// Comanda. Guardar la ventana "a mano" es más confiable que depender de que
+// el navegador la reconozca solo por nombre — así, mientras esa pestaña siga
+// abierta, cada "Compartir por WhatsApp" la reutiliza en vez de abrir otra.
+let comandaWaWindow = null;
+
 function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLabel }) {
   const [items, setItems] = useState(() => {
     try {
@@ -2993,9 +3103,20 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
   };
   const cleanPhone = phone.replace(/\D/g, "");
   const cleanCode  = countryCode.replace(/\D/g, "");
-  const waLink = cleanPhone
-    ? `https://wa.me/${cleanCode}${cleanPhone}?text=${whatsappText()}`
-    : `https://wa.me/?text=${whatsappText()}`;
+  const openWhatsapp = () => {
+    const url = cleanPhone
+      ? `https://wa.me/${cleanCode}${cleanPhone}?text=${whatsappText()}`
+      : `https://wa.me/?text=${whatsappText()}`;
+    // Si la pestaña de WhatsApp de la vez anterior sigue abierta, la
+    // reutilizamos (navegándola al nuevo mensaje y trayéndola al frente) en
+    // vez de abrir una pestaña nueva cada vez que se manda una comanda.
+    if (comandaWaWindow && !comandaWaWindow.closed) {
+      comandaWaWindow.location.href = url;
+      comandaWaWindow.focus();
+    } else {
+      comandaWaWindow = window.open(url, "recetapp_whatsapp");
+    }
+  };
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
@@ -3069,10 +3190,10 @@ function ComandaTab({ recipes, ingredients, business, cartSel, cartBatch, cartLa
               className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
           </div>
           <div className="flex gap-3">
-            <a href={waLink} target="_blank" rel="noreferrer"
+            <button onClick={openWhatsapp}
               className="flex-1 bg-green-500 hover:bg-green-600 text-white text-sm font-medium rounded-lg px-4 py-2.5 text-center transition-colors">
               📲 {cleanPhone ? "Enviar por WhatsApp" : "Compartir por WhatsApp"}
-            </a>
+            </button>
             <button onClick={clearCart}
               className="px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
               Limpiar
@@ -3534,7 +3655,7 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) { setUser(session.user); loadProfile(session.user.id); }
+      if (session?.user) { setUser(session.user); loadProfile(session.user); }
       else setLoading(false);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -3542,14 +3663,35 @@ export default function App() {
       // loguear de verdad — mostramos la pantalla de "elegir nueva contraseña"
       // en vez de entrar directo a la app.
       if (_event === "PASSWORD_RECOVERY") { setUser(session?.user ?? null); setRecoveryMode(true); setLoading(false); return; }
-      if (session?.user) { setUser(session.user); loadProfile(session.user.id); }
+      if (session?.user) { setUser(session.user); loadProfile(session.user); }
       else { setUser(null); setProfile(null); setLoading(false); }
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  const loadProfile = async (uid) => {
-    const { data: prof } = await supabase.from("profiles").select("*").eq("id", uid).single();
+  // Busca el perfil por ID. Si no existe (primer login con Google), intenta
+  // vincularlo con una invitación pendiente creada por un admin usando el
+  // email — así se activa solo, sin depender del trigger SQL anterior.
+  const loadProfile = async (authUser) => {
+    const uid = authUser.id;
+    const email = (authUser.email || "").toLowerCase();
+
+    let { data: prof } = await supabase.from("profiles").select("*").eq("id", uid).single();
+
+    if (!prof && email) {
+      const { data: pending } = await supabase.from("pending_users").select("*").eq("email", email).single();
+      if (pending) {
+        const { data: newProf, error: insertErr } = await supabase.from("profiles").insert({
+          id: uid, username: pending.username, phone: pending.phone,
+          role: pending.role, permissions: pending.permissions,
+        }).select().single();
+        if (!insertErr) {
+          await supabase.from("pending_users").delete().eq("email", email);
+          prof = newProf;
+        }
+      }
+    }
+
     setProfile(prof);
     await loadData();
     setLoading(false);
@@ -3580,10 +3722,10 @@ export default function App() {
   if (recoveryMode) return (
     <SetNewPasswordScreen onDone={() => {
       setRecoveryMode(false);
-      if (user) loadProfile(user.id); else setLoading(false);
+      if (user) loadProfile(user); else setLoading(false);
     }} />
   );
-  if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u.id); }} />;
+  if (!user) return <LoginScreen onLogin={(u) => { setUser(u); loadProfile(u); }} />;
   if (!profile) return (
     <div className="min-h-screen flex items-center justify-center bg-misky-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 max-w-sm text-center space-y-3">
@@ -3605,10 +3747,9 @@ export default function App() {
     { id:"dashboard",   label:"📊 Resumen",       show: !esMozo && canSeeTab("dashboard") },
     { id:"recipes",     label:"🍽️ Recetas",       show: !esMozo && canSeeTab("recipes") },
     { id:"ingredients", label:"📦 Ingredientes",   show: !esMozo && canSeeTab("ingredients") },
-    { id:"business",    label:"⚙️ Costos",         show: !esMozo && canSeeTab("business") },
     { id:"comanda",     label:"🧾 Comanda",        show: esMozo },
     { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
-    { id:"admin",       label:"👥 Usuarios",       show: profile?.permissions?.usuarios === true },
+    { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
 
   return (
@@ -3630,7 +3771,6 @@ export default function App() {
           <div className="flex items-center gap-3">
             <button onClick={() => {
                 if (tab === "ingredients") exportIngredientsCSV(ingredients);
-                else if (tab === "business") exportBusinessCSV(business);
                 else exportCSV(recipes, ingredients, business);
               }}
               className="hidden sm:flex items-center gap-1.5 text-sm text-gray-600 hover:text-misky-600 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
@@ -3663,8 +3803,7 @@ export default function App() {
                                      cartLabel={cartLabel} setCartLabel={setCartLabel} />}
         {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
         {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} profile={profile} />}
-        {tab === "business"    && <BusinessTab business={business} setBusiness={setBusiness} profile={profile} />}
-        {tab === "admin"       && profile?.permissions?.usuarios === true && <AdminPanel profile={profile} />}
+        {tab === "settings"    && <SettingsTab business={business} setBusiness={setBusiness} profile={profile} canSeeCosts={canSeeTab("business")} />}
         {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile}
                                      cartSel={cartSel} cartBatch={cartBatch} cartLabel={cartLabel} />}
         {tab === "miseenplace" && <MiseEnPlaceTab recipes={recipes} ingredients={ingredients} business={business}
