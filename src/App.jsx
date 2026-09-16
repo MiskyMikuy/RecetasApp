@@ -3836,28 +3836,55 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
     if (!error) setRecipes(prev => sortByName(prev.map(r => r.id === id ? { ...r, category: value } : r)));
   };
 
-  // Ingredientes en $0 dentro de cada receta — pasa seguido después de
-  // importar recetas: si el ingrediente no existía todavía, se crea vacío
-  // (ver importRecipesCSV). Con 20-30 recetas afectadas, abrirlas una por una
-  // para encontrar cuáles son es lo que hacía perder casi 90 minutos por
-  // presupuesto — este mapa las marca de un vistazo en la tabla de abajo.
+  // Costeo de cada receta calculado una sola vez acá (antes se recalculaba
+  // adentro del .map() de cada fila) para poder además: (1) marcar las que
+  // tienen algún ingrediente en $0 (pasa seguido después de importar recetas
+  // — si el ingrediente no existía todavía, se crea vacío, ver
+  // importRecipesCSV) y (2) ordenar por costo para encontrar rápido las que
+  // quedaron con una cantidad cargada mal (ej. por una IA externa que arma
+  // el CSV) — un costo llamativamente bajo suele ser la pista. Antes, con
+  // 20-30 recetas afectadas, revisarlas una por una llevaba casi 90 minutos.
+  const recipeRows = useMemo(() => recipes.map(r => {
+    const c = calcRecipe(r, ingredients, business);
+    const missing = [...new Set(c.lines.filter(l => !l.ing.buy_price).map(l => l.ing.name))];
+    return { r, c, missing };
+  }), [recipes, ingredients, business]);
+
   const missingPriceMap = useMemo(() => {
     const map = new Map();
-    recipes.forEach(r => {
-      const c = calcRecipe(r, ingredients, business);
-      const names = [...new Set(c.lines.filter(l => !l.ing.buy_price).map(l => l.ing.name))];
-      if (names.length > 0) map.set(r.id, names);
-    });
+    recipeRows.forEach(({ r, missing }) => { if (missing.length > 0) map.set(r.id, missing); });
     return map;
-  }, [recipes, ingredients, business]);
+  }, [recipeRows]);
   const missingPriceCount = missingPriceMap.size;
   const [onlyMissingPrice, setOnlyMissingPrice] = useState(false);
 
-  const filteredRecipes = recipes.filter(r =>
+  // Ordenar clickeando el encabezado de una columna — sobre todo para
+  // "Costo/porción": ordenado de menor a mayor, las recetas con algo mal
+  // cargado (precio o cantidad) quedan arriba de todo, en vez de tener que
+  // buscarlas entre todas las demás.
+  const [sortBy, setSortBy]   = useState(null); // null=alfabético, o "portions"|"cost"|"price"|"profit"
+  const [sortDir, setSortDir] = useState("asc");
+  const toggleSort = (field) => {
+    if (sortBy === field) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortBy(field); setSortDir("asc"); }
+  };
+  const SORT_KEYS = {
+    portions: x => x.r.portions,
+    cost:     x => x.c.totalCost,
+    price:    x => x.c.roundedPrice,
+    profit:   x => x.c.realProfitPct,
+  };
+
+  let filteredRows = recipeRows.filter(({ r }) =>
     (normalizeText(r.name).includes(normalizeText(search)) ||
      normalizeText(r.category || "").includes(normalizeText(search))) &&
     (!onlyMissingPrice || missingPriceMap.has(r.id))
   );
+  if (sortBy) {
+    const key = SORT_KEYS[sortBy];
+    filteredRows = [...filteredRows].sort((a, b) => (key(a) - key(b)) * (sortDir === "asc" ? 1 : -1));
+  }
+  const filteredRecipes = filteredRows.map(x => x.r);
 
   const ingredientsInSelected = useMemo(() => {
     const map = new Map();
@@ -4039,8 +4066,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             para llegar a la columna Categoría. Acá va una tarjeta por receta,
             con la categoría editable igual que en la tabla, sin scroll lateral. */}
         <div className="sm:hidden divide-y divide-gray-50">
-          {filteredRecipes.map(r => {
-            const c = calcRecipe(r, ingredients, business);
+          {filteredRows.map(({ r, c }) => {
             return (
               <div key={r.id} className={`p-4 ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
                 <div className="flex items-start gap-2">
@@ -4092,14 +4118,25 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                     <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4 accent-misky-500" />
                   </th>
                 )}
-                {["Receta","Categoría","Porciones","Costo/porción","Precio redondeado","Ganancia %"].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                {[
+                  { key: null, label: "Receta" },
+                  { key: null, label: "Categoría" },
+                  { key: "portions", label: "Porciones" },
+                  { key: "cost", label: "Costo/porción" },
+                  { key: "price", label: "Precio redondeado" },
+                  { key: "profit", label: "Ganancia %" },
+                ].map(h => (
+                  <th key={h.label}
+                    onClick={h.key ? () => toggleSort(h.key) : undefined}
+                    title={h.key ? "Ordenar" : undefined}
+                    className={`text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide ${h.key ? "cursor-pointer select-none hover:text-misky-600" : ""}`}>
+                    {h.label}{sortBy === h.key && h.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredRecipes.map((r, idx) => {
-                const c = calcRecipe(r, ingredients, business);
+              {filteredRows.map(({ r, c }, idx) => {
                 return (
                   <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
                     {canEdit && (
