@@ -2788,16 +2788,14 @@ async function updateRecipeSafe(id, payload) {
   return { data, error };
 }
 
-function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile }) {
+function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business, profile, search, setSearch, selected, setSelected }) {
   const canEdit = canEditTabPerms(profile, "recipes");
   const showIngredientes = canP(profile, "recipes", "ingredientes");
   const showCostos = canP(profile, "recipes", "costos");
   const showPrecioSug = canP(profile, "recipes", "precio_sugerido");
   const showPrecioRed = canP(profile, "recipes", "precio_redondeado");
   const showGanancia = canP(profile, "recipes", "ganancia");
-  const [selected, setSelected] = useState(null);
   const [modal, setModal]       = useState(null);
-  const [search, setSearch]     = useState("");
   const [mode, setMode]         = useState("ver"); // "ver" | "gestionar"
   const [moreMenu, setMoreMenu] = useState(false);
   const [detailMenu, setDetailMenu] = useState(false);
@@ -3794,7 +3792,8 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
 // para no perderse al cambiar de pestaña y para poder reutilizarla directo en
 // Comanda / Mise en place sin volver a tildar todo.
 function Dashboard({ recipes, ingredients, setRecipes, business, profile,
-                      cartSel, setCartSel, cartBatch, setCartBatch, cartLabel, setCartLabel }) {
+                      cartSel, setCartSel, cartBatch, setCartBatch, cartLabel, setCartLabel,
+                      search, setSearch }) {
   const canEdit = canEditTabPerms(profile, "dashboard") || profile?.role === "admin";
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
@@ -3804,7 +3803,6 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const [bulkAddIng, setBulkAddIng] = useState({ ingredientId: "", qty: "" });
   const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [search, setSearch]         = useState("");
   // Editar la categoría directo en esta tabla, con un click en la celda —
   // igual que en Ingredientes — sin tener que tildar la receta y usar
   // "Editar en lote" ni ir a la pestaña Recetas.
@@ -3817,8 +3815,13 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
     const value = editCatVal.trim();
     setEditCatId(null);
     if (value === "") return;
-    const { data, error } = await supabase.from("recipes").update({ category: value }).eq("id", id).select().single();
-    if (!error && data) setRecipes(prev => sortByName(prev.map(r => r.id === id ? data : r)));
+    const { error } = await supabase.from("recipes").update({ category: value }).eq("id", id);
+    // OJO: acá no hay que pisar la receta entera con lo que devuelve Supabase
+    // — esa consulta no trae los recipe_ingredients (son de otra tabla), y
+    // reemplazar el objeto completo hacía que la receta se viera sin
+    // ingredientes en la app (aunque en la base seguían intactos) hasta
+    // recargar la página. Por eso solo se actualiza el campo category.
+    if (!error) setRecipes(prev => sortByName(prev.map(r => r.id === id ? { ...r, category: value } : r)));
   };
 
   const filteredRecipes = recipes.filter(r =>
@@ -4299,6 +4302,15 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem("recetapp_cart_batch", JSON.stringify(cartBatch)); } catch {} }, [cartBatch]);
   useEffect(() => { try { localStorage.setItem("recetapp_cart_label", cartLabel); } catch {} }, [cartLabel]);
 
+  // Búsqueda y receta abierta de Recetas/Resumen — también viven acá (no
+  // adentro de cada pestaña) para no perderse al ir y volver de otra pestaña
+  // a revisar algo (por ej. comparar precios de varias recetas de un
+  // presupuesto): antes, cada vez que se salía de la pestaña se perdía lo
+  // escrito en el buscador y había que volver a tipearlo.
+  const [recipeSearch, setRecipeSearch]     = useState("");
+  const [recipeSelected, setRecipeSelected] = useState(null);
+  const [dashSearch, setDashSearch]         = useState("");
+
   useEffect(() => { try { localStorage.setItem("recetapp_last_tab", tab); } catch {} }, [tab]);
 
   // Si la pestaña recordada ya no es válida para este perfil (cambiaron sus
@@ -4457,8 +4469,10 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 py-5">
         {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile}
                                      cartSel={cartSel} setCartSel={setCartSel} cartBatch={cartBatch} setCartBatch={setCartBatch}
-                                     cartLabel={cartLabel} setCartLabel={setCartLabel} />}
-        {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile} />}
+                                     cartLabel={cartLabel} setCartLabel={setCartLabel}
+                                     search={dashSearch} setSearch={setDashSearch} />}
+        {tab === "recipes"     && <RecipesTab recipes={recipes} setRecipes={setRecipes} ingredients={ingredients} setIngredients={setIngredients} business={business} profile={profile}
+                                     search={recipeSearch} setSearch={setRecipeSearch} selected={recipeSelected} setSelected={setRecipeSelected} />}
         {tab === "ingredients" && <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} setRecipes={setRecipes} profile={profile} />}
         {tab === "settings"    && <SettingsTab business={business} setBusiness={setBusiness} profile={profile} canSeeCosts={canSeeTab("business")} />}
         {tab === "comanda"     && <ComandaTab recipes={recipes} ingredients={ingredients} business={business} profile={profile}
