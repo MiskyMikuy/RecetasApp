@@ -431,7 +431,7 @@ function downloadHTMLFile(content, filename) {
 // navegador, imprimir o guardar como PDF desde ahí.
 function downloadRecipesText(selectedRecipes, ingredients, business) {
   const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
-  const recipesHtml = selectedRecipes.map(r => {
+  const recipeCards = selectedRecipes.map(r => {
     const batches = r._batches || 1;
     const calc = calcRecipe(r, ingredients, business);
     const rows = calc.lines.map(l =>
@@ -456,7 +456,14 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
         <div class="procedure">${procedure}</div>
       </div>
     </div>`;
-  }).join("");
+  });
+  // Hoja apaisada (A4 horizontal) con 2 recetas por página, una al lado de la
+  // otra, para gastar menos papel al imprimir el recetario.
+  const pages = [];
+  for (let i = 0; i < recipeCards.length; i += 2) pages.push(recipeCards.slice(i, i + 2));
+  const recipesHtml = pages.map(pair =>
+    `<div class="print-page">${pair.join("")}</div>`
+  ).join("");
 
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -471,26 +478,33 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   .page-header img { height: 44px; }
   .page-header h1 { color: white; font-size: 21px; margin: 0; }
   .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
-  .recipe { background: white; margin: 16px auto 0; max-width: 760px; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
-  .recipe-header { background: var(--brand); color: white; padding: 16px 16px; }
-  .recipe-header h2 { margin: 0; font-size: 22px; }
-  .recipe-header p { margin: 4px 0 0; font-size: 14px; color: #ecdcf2; }
-  .recipe-body { padding: 16px 14px; }
-  .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 8px; }
+  /* Hoja apaisada: 2 recetas lado a lado por página, para gastar menos papel. */
+  .print-page { display: flex; gap: 16px; align-items: flex-start; max-width: 1050px; margin: 16px auto 0; }
+  .recipe { background: white; flex: 1; min-width: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
+  .recipe-header { background: var(--brand); color: white; padding: 14px 16px; }
+  .recipe-header h2 { margin: 0; font-size: 20px; }
+  .recipe-header p { margin: 4px 0 0; font-size: 13px; color: #ecdcf2; }
+  .recipe-body { padding: 14px 14px; }
+  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 8px; }
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
   th { text-align: left; color: #6b7280; font-size: 11px; text-transform: uppercase; padding: 6px 5px; border-bottom: 2px solid #e5e7eb; }
-  td { padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
+  td { padding: 7px 6px; border-bottom: 1px solid #f3f4f6; }
   td.qty-cell { font-weight: 700; color: var(--brand-dark); }
   tr:last-child td { border-bottom: none; }
-  .procedure { font-size: 16px; line-height: 1.6; color: #374151; }
+  .procedure { font-size: 14px; line-height: 1.55; color: #374151; }
   .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
   .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .print-btn:hover { background: #f9f4fb; }
+  /* En el celular no hay lugar para 2 recetas lado a lado — se apilan y se ven
+     bien igual; en pantallas grandes y al imprimir quedan una al lado de otra. */
+  @media (max-width: 720px) { .print-page { flex-direction: column; } }
   @media print {
+    @page { size: A4 landscape; margin: 10mm; }
     body { background: white; }
-    .recipe { box-shadow: none; border: 1px solid #e5e7eb; margin-top: 0; }
-    .recipe + .recipe { page-break-before: always; margin-top: 0; }
+    .print-page { max-width: none; page-break-after: always; margin-top: 0; flex-direction: row; }
+    .print-page:last-child { page-break-after: avoid; }
+    .recipe { box-shadow: none; border: 1px solid #e5e7eb; }
     .footer { page-break-before: avoid; }
     .page-header, .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
@@ -3791,6 +3805,21 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [search, setSearch]         = useState("");
+  // Editar la categoría directo en esta tabla, con un click en la celda —
+  // igual que en Ingredientes — sin tener que tildar la receta y usar
+  // "Editar en lote" ni ir a la pestaña Recetas.
+  const [editCatId, setEditCatId]   = useState(null);
+  const [editCatVal, setEditCatVal] = useState("");
+  const startEditCat = (r) => { setEditCatId(r.id); setEditCatVal(r.category || ""); };
+  const saveEditCat = async () => {
+    if (editCatId == null) return;
+    const id = editCatId;
+    const value = editCatVal.trim();
+    setEditCatId(null);
+    if (value === "") return;
+    const { data, error } = await supabase.from("recipes").update({ category: value }).eq("id", id).select().single();
+    if (!error && data) setRecipes(prev => sortByName(prev.map(r => r.id === id ? data : r)));
+  };
 
   const filteredRecipes = recipes.filter(r =>
     normalizeText(r.name).includes(normalizeText(search)) ||
@@ -3964,7 +3993,50 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <Pill color="misky">{filteredRecipes.length} receta{filteredRecipes.length !== 1 ? "s" : ""}</Pill>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        {/* Celular: en pantallas angostas la tabla obligaba a girar el teléfono
+            para llegar a la columna Categoría. Acá va una tarjeta por receta,
+            con la categoría editable igual que en la tabla, sin scroll lateral. */}
+        <div className="sm:hidden divide-y divide-gray-50">
+          {filteredRecipes.map(r => {
+            const c = calcRecipe(r, ingredients, business);
+            return (
+              <div key={r.id} className={`p-4 ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
+                <div className="flex items-start gap-2">
+                  {canEdit && (
+                    <input type="checkbox" checked={!!cartSel?.[r.id]} onChange={() => toggleSelect(r.id)}
+                      className="w-4 h-4 accent-misky-500 mt-1" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 text-sm">{r.name}</p>
+                    <div className="mt-1">
+                      {editCatId === r.id ? (
+                        <input autoFocus value={editCatVal}
+                          onChange={e => setEditCatVal(e.target.value)}
+                          onBlur={saveEditCat}
+                          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditCatId(null); }}
+                          className="w-32 border border-misky-300 rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-misky-400" />
+                      ) : (
+                        <span onClick={canEdit ? () => startEditCat(r) : undefined}
+                          title={canEdit ? "Tocar para editar" : undefined}
+                          className={`text-xs ${canEdit ? "cursor-text hover:bg-amber-50 rounded px-1 -mx-1 border-b border-dotted border-gray-300 text-gray-500" : "text-gray-500"}`}>
+                          {r.category || "Sin categoría"}
+                        </span>
+                      )}
+                      <span className="text-xs text-gray-400"> · {r.portions} porc.</span>
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="font-bold text-misky-600 text-sm">${c.roundedPrice.toLocaleString("es-AR")}</p>
+                    <Pill color={c.realProfitPct >= 35 ? "misky" : c.realProfitPct >= 20 ? "amber" : "rose"}>
+                      {c.realProfitPct.toFixed(1)}%
+                    </Pill>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
@@ -3973,7 +4045,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                     <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4 accent-misky-500" />
                   </th>
                 )}
-                {["Receta","Porciones","Costo/porción","Precio redondeado","Ganancia %"].map(h => (
+                {["Receta","Categoría","Porciones","Costo/porción","Precio redondeado","Ganancia %"].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                 ))}
               </tr>
@@ -3989,6 +4061,21 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                       </td>
                     )}
                     <td className="px-4 py-3 font-medium text-gray-800">{r.name}</td>
+                    <td className="px-4 py-3">
+                      {editCatId === r.id ? (
+                        <input autoFocus value={editCatVal}
+                          onChange={e => setEditCatVal(e.target.value)}
+                          onBlur={saveEditCat}
+                          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditCatId(null); }}
+                          className="w-24 border border-misky-300 rounded px-1.5 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-misky-400" />
+                      ) : (
+                        <span onClick={canEdit ? () => startEditCat(r) : undefined}
+                          title={canEdit ? "Click para editar" : undefined}
+                          className={canEdit ? "cursor-text hover:bg-amber-50 rounded px-1 -mx-1 border-b border-dotted border-transparent hover:border-gray-300 text-gray-500" : "text-gray-500"}>
+                          {r.category || "Sin categoría"}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-gray-500">{r.portions}</td>
                     <td className="px-4 py-3 text-rose-600 font-medium">${c.totalCost.toFixed(2)}</td>
                     <td className="px-4 py-3 font-bold text-misky-600 text-base">${c.roundedPrice.toLocaleString("es-AR")}</td>
@@ -4002,11 +4089,11 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
               })}
             </tbody>
           </table>
-          {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
-          {recipes.length > 0 && filteredRecipes.length === 0 && (
-            <div className="text-center py-10 text-gray-400"><div className="text-3xl mb-2">🔍</div>Sin resultados</div>
-          )}
         </div>
+        {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
+        {recipes.length > 0 && filteredRecipes.length === 0 && (
+          <div className="text-center py-10 text-gray-400"><div className="text-3xl mb-2">🔍</div>Sin resultados</div>
+        )}
       </div>
 
       {modal === "bulkEdit" && (
