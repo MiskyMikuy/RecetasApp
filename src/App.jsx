@@ -49,6 +49,57 @@ function isFuzzyMatch(nameA, nameB) {
   const threshold = maxLen <= 6 ? 1 : maxLen <= 10 ? 2 : 3;
   return dist <= threshold;
 }
+
+// \u2500\u2500\u2500 PEGAR LISTA DE RECETAS (Resumen) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Para armar un men\u00fa/presupuesto de varias recetas sin buscarlas una por una:
+// se pega una lista (por ej. copiada de un men\u00fa en Word, numerada o no) y se
+// matchea cada l\u00ednea contra las recetas existentes.
+function parsePastedRecipeList(text) {
+  const rawLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  // Si son mayor\u00eda, asume que las l\u00edneas SIN n\u00famero son t\u00edtulos de secci\u00f3n
+  // ("Pastas", "Carnes") y las descarta; si no, toma todas las l\u00edneas tal
+  // cual (por si la lista vino sin numerar).
+  const numbered = rawLines.filter(l => /^\d+[.)-]\s*/.test(l));
+  const source = numbered.length >= rawLines.length / 2 ? numbered : rawLines;
+  return source
+    .map(l => l.replace(/^\d+[.)-]\s*/, "").replace(/^[-\u2022*]\s*/, "").trim())
+    .filter(Boolean);
+}
+// Normaliza para comparar, tratando puntuación (paréntesis, comas) como
+// espacio — "Carbonada criolla (con batata)" y "Carbonada criolla, con
+// batata" deben poder matchear igual.
+function normalizeForMatch(s) {
+  return normalizeName(s).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+function wordOverlapScore(a, b) {
+  const wa = new Set(normalizeForMatch(a).split(" ").filter(w => w.length > 2));
+  const wb = new Set(normalizeForMatch(b).split(" ").filter(w => w.length > 2));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let common = 0;
+  wa.forEach(w => { if (wb.has(w)) common++; });
+  return common / Math.max(wa.size, wb.size);
+}
+function matchPastedRecipeNames(names, recipes) {
+  return names.map(name => {
+    const norm = normalizeForMatch(name);
+    let match = recipes.find(r => normalizeForMatch(r.name) === norm);
+    if (!match) {
+      match = recipes.find(r => {
+        const rn = normalizeForMatch(r.name);
+        return rn.includes(norm) || norm.includes(rn);
+      });
+    }
+    if (!match) {
+      let best = null, bestScore = 0;
+      recipes.forEach(r => {
+        const score = wordOverlapScore(name, r.name);
+        if (score > bestScore) { bestScore = score; best = r; }
+      });
+      if (best && bestScore >= 0.6) match = best;
+    }
+    return { name, match };
+  });
+}
 function unitCost(ing) {
   const base = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
   return ing.waste_pct > 0 ? base / (1 - ing.waste_pct / 100) : base;
@@ -3815,6 +3866,21 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const [bulkAddIng, setBulkAddIng] = useState({ ingredientId: "", qty: "" });
   const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
+  // Pegar una lista de nombres (ej. de un menú armado en Word) y seleccionar
+  // de una todas las recetas que matcheen, en vez de buscar una por una.
+  const [pasteText, setPasteText]     = useState("");
+  const [pasteResult, setPasteResult] = useState(null); // { matchedCount, total, unmatched }
+  const applyPastedList = () => {
+    const names = parsePastedRecipeList(pasteText);
+    const results = matchPastedRecipeNames(names, recipes);
+    const matched = results.filter(x => x.match);
+    const unmatched = results.filter(x => !x.match).map(x => x.name);
+    const next = {};
+    matched.forEach(({ match }) => { next[match.id] = true; });
+    setCartSel(next);
+    setCartBatch({});
+    setPasteResult({ matchedCount: matched.length, total: names.length, unmatched });
+  };
   // Editar la categoría directo en esta tabla, con un click en la celda —
   // igual que en Ingredientes — sin tener que tildar la receta y usar
   // "Editar en lote" ni ir a la pestaña Recetas.
@@ -4020,6 +4086,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
           <span className="text-xs font-medium text-amber-700 whitespace-nowrap">{onlyMissingPrice ? "✕ Ver todas" : "Ver solo esas →"}</span>
         </button>
       )}
+      {canEdit && (
+        <button onClick={() => setModal("pasteList")}
+          className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">
+          📋 Pegar lista de recetas (menú, presupuesto...)
+        </button>
+      )}
       {canEdit && selectedCount > 0 && (
         <div className="bg-misky-50 border border-misky-100 rounded-xl px-4 py-3 space-y-2.5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -4184,6 +4256,47 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
           <div className="text-center py-10 text-gray-400"><div className="text-3xl mb-2">🔍</div>Sin resultados</div>
         )}
       </div>
+
+      {modal === "pasteList" && (
+        <Modal title="Pegar lista de recetas" onClose={() => { setModal(null); setPasteText(""); setPasteResult(null); }}>
+          {!pasteResult ? (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                Pegá una lista de nombres de recetas — copiada de un menú, un presupuesto, lo que sea —
+                una por línea, con número adelante ("1. Ñoquis...") o sin él. Selecciona de una todas las
+                que encuentre, sin tener que buscarlas una por una.
+              </p>
+              <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={12}
+                placeholder={"1. Ñoquis de papa con salsa de tomate casera y albahaca\n2. Canelones de verdura y ricota con salsa blanca\n..."}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+              <div className="flex justify-end gap-3 pt-1">
+                <Btn variant="secondary" onClick={() => { setModal(null); setPasteText(""); }}>Cancelar</Btn>
+                <Btn onClick={applyPastedList} disabled={!pasteText.trim()}>Buscar y seleccionar</Btn>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-700">
+                Encontradas <strong className="text-misky-700">{pasteResult.matchedCount}</strong> de <strong>{pasteResult.total}</strong> —
+                quedaron tildadas en la tabla de abajo.
+              </p>
+              {pasteResult.unmatched.length > 0 && (
+                <div className="bg-amber-50 border border-amber-100 rounded-lg p-3">
+                  <p className="text-sm font-medium text-amber-800 mb-1">
+                    No encontradas (revisá si el nombre está escrito distinto, o si la receta todavía no existe):
+                  </p>
+                  <ul className="text-sm text-amber-700 list-disc list-inside space-y-0.5">
+                    {pasteResult.unmatched.map((n, i) => <li key={i}>{n}</li>)}
+                  </ul>
+                </div>
+              )}
+              <div className="flex justify-end pt-1">
+                <Btn onClick={() => { setModal(null); setPasteText(""); setPasteResult(null); }}>Listo</Btn>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
 
       {modal === "bulkEdit" && (
         <Modal title={`Editar en lote (${selectedCount} recetas)`} onClose={() => setModal(null)}>
