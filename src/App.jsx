@@ -3411,6 +3411,11 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   // plegado por defecto.
   const [phoneBarOpen, setPhoneBarOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Presupuesto: antes había que armar el pedido y después borrar/editar el
+  // total a mano en el mensaje, porque un presupuesto solo muestra el precio
+  // de cada plato, no un total a cobrar. Con esto tildado, el mensaje sale
+  // directo sin esa línea.
+  const [quoteMode, setQuoteMode] = useState(false);
 
   // Selección hecha en la pestaña Resumen (carrito compartido) — un botón
   // opcional para traerla acá sin tener que volver a tildar todo a mano. No
@@ -3447,6 +3452,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
     setDiscountPct("0");
     setSplitMode(false);
     setAssign({});
+    setQuoteMode(false); // que no quede tildado "presupuesto" para el próximo pedido real, por las dudas
     labelTouchedRef.current = false; // pedido nuevo: que vuelva a tomar el nombre de Resumen si hay uno
     try { localStorage.removeItem(COMANDA_STORAGE_KEY); } catch {}
   };
@@ -3514,6 +3520,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
         ? `• ${r.name} x${qty} (${unit} c/u): ${lineTotal}\n`
         : `• ${r.name}: ${lineTotal}\n`;
     });
+    if (quoteMode) return txt.trimEnd();
     if (puedeCobrar && splitMode && personaSubtotals.some(p => p.sub > 0)) {
       txt += `\nSubtotal: $${total.toLocaleString("es-AR")}`;
       if (pct > 0) txt += `\nDescuento (${pct}%): -$${discountAmount.toLocaleString("es-AR")}`;
@@ -3749,6 +3756,11 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
                     placeholder="N° de WhatsApp (opcional)" type="tel"
                     className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
                 </div>
+                <label className="flex items-center gap-1.5 text-xs text-gray-500">
+                  <input type="checkbox" checked={quoteMode} onChange={e => setQuoteMode(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-misky-500" />
+                  Es un presupuesto (el mensaje no lleva el total, solo el precio de cada plato)
+                </label>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -3824,9 +3836,27 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
     if (!error) setRecipes(prev => sortByName(prev.map(r => r.id === id ? { ...r, category: value } : r)));
   };
 
+  // Ingredientes en $0 dentro de cada receta — pasa seguido después de
+  // importar recetas: si el ingrediente no existía todavía, se crea vacío
+  // (ver importRecipesCSV). Con 20-30 recetas afectadas, abrirlas una por una
+  // para encontrar cuáles son es lo que hacía perder casi 90 minutos por
+  // presupuesto — este mapa las marca de un vistazo en la tabla de abajo.
+  const missingPriceMap = useMemo(() => {
+    const map = new Map();
+    recipes.forEach(r => {
+      const c = calcRecipe(r, ingredients, business);
+      const names = [...new Set(c.lines.filter(l => !l.ing.buy_price).map(l => l.ing.name))];
+      if (names.length > 0) map.set(r.id, names);
+    });
+    return map;
+  }, [recipes, ingredients, business]);
+  const missingPriceCount = missingPriceMap.size;
+  const [onlyMissingPrice, setOnlyMissingPrice] = useState(false);
+
   const filteredRecipes = recipes.filter(r =>
-    normalizeText(r.name).includes(normalizeText(search)) ||
-    normalizeText(r.category || "").includes(normalizeText(search))
+    (normalizeText(r.name).includes(normalizeText(search)) ||
+     normalizeText(r.category || "").includes(normalizeText(search))) &&
+    (!onlyMissingPrice || missingPriceMap.has(r.id))
   );
 
   const ingredientsInSelected = useMemo(() => {
@@ -3954,6 +3984,15 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
         <StatCard label="Costos fijos/mes" value={`$${totalFixed.toLocaleString("es-AR")}`} accent="rose" />
         <StatCard label="CF x unidad"     value={`$${cfUnit.toFixed(2)}`} accent="amber" />
       </div>
+      {missingPriceCount > 0 && (
+        <button onClick={() => setOnlyMissingPrice(v => !v)}
+          className={`w-full text-left border-l-4 rounded-r-xl px-4 py-3 flex items-center justify-between gap-3 transition-colors ${onlyMissingPrice ? "border-l-amber-600 bg-amber-100" : "border-l-amber-500 bg-amber-50 hover:bg-amber-100"}`}>
+          <span className="text-sm text-amber-800">
+            <strong>⚠️ {missingPriceCount} receta{missingPriceCount !== 1 ? "s" : ""}</strong> con algún ingrediente sin precio cargado — el costo de esas recetas no es real todavía.
+          </span>
+          <span className="text-xs font-medium text-amber-700 whitespace-nowrap">{onlyMissingPrice ? "✕ Ver todas" : "Ver solo esas →"}</span>
+        </button>
+      )}
       {canEdit && selectedCount > 0 && (
         <div className="bg-misky-50 border border-misky-100 rounded-xl px-4 py-3 space-y-2.5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -4010,7 +4049,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                       className="w-4 h-4 accent-misky-500 mt-1" />
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-800 text-sm">{r.name}</p>
+                    <p className="font-medium text-gray-800 text-sm">
+                      {r.name}
+                      {missingPriceMap.has(r.id) && (
+                        <span title={`Falta precio: ${missingPriceMap.get(r.id).join(", ")}`} className="ml-1 cursor-help">⚠️</span>
+                      )}
+                    </p>
                     <div className="mt-1">
                       {editCatId === r.id ? (
                         <input autoFocus value={editCatVal}
@@ -4063,7 +4107,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                         <input type="checkbox" checked={!!cartSel?.[r.id]} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-misky-500" />
                       </td>
                     )}
-                    <td className="px-4 py-3 font-medium text-gray-800">{r.name}</td>
+                    <td className="px-4 py-3 font-medium text-gray-800">
+                      {r.name}
+                      {missingPriceMap.has(r.id) && (
+                        <span title={`Falta precio: ${missingPriceMap.get(r.id).join(", ")}`} className="ml-1 cursor-help">⚠️</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {editCatId === r.id ? (
                         <input autoFocus value={editCatVal}
