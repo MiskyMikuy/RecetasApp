@@ -54,15 +54,20 @@ function isFuzzyMatch(nameA, nameB) {
 // Para armar un men\u00fa/presupuesto de varias recetas sin buscarlas una por una:
 // se pega una lista (por ej. copiada de un men\u00fa en Word, numerada o no) y se
 // matchea cada l\u00ednea contra las recetas existentes.
+const PASTED_LIST_MARKER = /^(\d+[.)-]|[-\u2022*\u25aa\u2023])\s*/;
 function parsePastedRecipeList(text) {
   const rawLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  // Si son mayor\u00eda, asume que las l\u00edneas SIN n\u00famero son t\u00edtulos de secci\u00f3n
-  // ("Pastas", "Carnes") y las descarta; si no, toma todas las l\u00edneas tal
-  // cual (por si la lista vino sin numerar).
-  const numbered = rawLines.filter(l => /^\d+[.)-]\s*/.test(l));
-  const source = numbered.length >= rawLines.length / 2 ? numbered : rawLines;
+  // Si son mayor\u00eda, asume que las l\u00edneas SIN marca (n\u00famero o vi\u00f1eta) son
+  // t\u00edtulos de secci\u00f3n ("Pastas", "Carnes") o saludos ("Hola Gonzalo!") y las
+  // descarta; si no, toma todas las l\u00edneas tal cual (por si vino sin numerar).
+  const marked = rawLines.filter(l => PASTED_LIST_MARKER.test(l));
+  const source = marked.length >= rawLines.length / 2 ? marked : rawLines;
   return source
-    .map(l => l.replace(/^\d+[.)-]\s*/, "").replace(/^[-\u2022*]\s*/, "").trim())
+    .map(l => l
+      .replace(PASTED_LIST_MARKER, "")
+      // saca un precio al final de la l\u00ednea, tipo ": $12.500", "- $3500", "$1.200"
+      .replace(/[:\-\u2013\u2014]?\s*\$\s?[\d][\d.,]*\s*$/, "")
+      .trim())
     .filter(Boolean);
 }
 // Normaliza para comparar, tratando puntuación (paréntesis, comas) como
@@ -83,12 +88,10 @@ function matchPastedRecipeNames(names, recipes) {
   return names.map(name => {
     const norm = normalizeForMatch(name);
     let match = recipes.find(r => normalizeForMatch(r.name) === norm);
-    if (!match) {
-      match = recipes.find(r => {
-        const rn = normalizeForMatch(r.name);
-        return rn.includes(norm) || norm.includes(rn);
-      });
-    }
+    // (Ojo: acá NO hay un "includes" de nombres como respaldo — nombres cortos
+    // tipo "Pizza" quedaban adentro de cualquier receta que mencionara esa
+    // palabra de pasada, matcheando cosas que no correspondían. El respaldo
+    // por palabras en común de abajo es más seguro.)
     if (!match) {
       let best = null, bestScore = 0;
       recipes.forEach(r => {
@@ -99,6 +102,93 @@ function matchPastedRecipeNames(names, recipes) {
     }
     return { name, match };
   });
+}
+// ─── PEGAR INGREDIENTES (formulario de receta) ─────────────────────────────
+// Para cargar una receta rápido a partir de una lista ya armada en otro
+// formato (ej. una planilla con "ingrediente / cantidad / unidad", a veces
+// dividida en secciones — relleno, salsa, etc.) en vez de tipear cada línea
+// a mano.
+function parsePastedIngredientRows(text) {
+  const lines = text.split(/\r?\n/);
+  const rows = [];
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    // Tabulaciones (pegado de Excel/Sheets) o, si no hay, 2+ espacios seguidos.
+    let cols = line.split("\t");
+    if (cols.length < 2) cols = line.split(/ {2,}/);
+    cols = cols.map(c => c.trim()).filter(c => c !== "");
+    if (cols.length < 3) continue; // encabezados, títulos de sección, líneas vacías
+    const unit = cols[cols.length - 1];
+    const qtyRaw = cols[cols.length - 2];
+    const qtyNum = parseFloat(qtyRaw.replace(",", "."));
+    if (!isFinite(qtyNum) || qtyNum <= 0) continue;
+    if (!/^[a-zA-Z]/.test(unit)) continue; // la última columna tiene que ser una unidad, no un número
+    const name = cols.slice(0, cols.length - 2).join(" ").trim();
+    if (!name) continue;
+    rows.push({ name, qty: qtyNum, unit });
+  }
+  return rows;
+}
+// Si el mismo ingrediente aparece en varias secciones de la receta (ej. "cebolla"
+// en el relleno Y en la salsa), se suma automáticamente — pero solo cuando está
+// en la MISMA unidad; "ajo: 1 cabeza" y "ajo: 2 dientes" quedan como dos líneas
+// separadas porque no son la misma cantidad de la misma cosa.
+function consolidatePastedIngredientRows(rows) {
+  const map = new Map();
+  rows.forEach(({ name, qty, unit }) => {
+    const nameKey = normalizeName(name);
+    if (!map.has(nameKey)) map.set(nameKey, { name, units: new Map(), rawUnitMap: new Map() });
+    const entry = map.get(nameKey);
+    const unitKey = normalizeName(unit);
+    entry.units.set(unitKey, (entry.units.get(unitKey) || 0) + qty);
+    entry.rawUnitMap.set(unitKey, unit);
+  });
+  const out = [];
+  map.forEach(entry => {
+    entry.units.forEach((totalQty, unitKey) => {
+      out.push({ name: entry.name, qty: Math.round(totalQty * 1000) / 1000, unit: entry.rawUnitMap.get(unitKey) || unitKey });
+    });
+  });
+  return out;
+}
+// Convierte entre unidades "hermanas" (peso: g/kg · volumen: ml/cc/lt ·
+// conteo: u/un/unidad/docena) para poder pegar en gramos/cc directo aunque el
+// ingrediente ya esté cargado en kg/lt. Fuera de esas familias ("diente",
+// "cabeza", "taza", etc.) no se puede convertir con seguridad → se marca para
+// revisar a mano en vez de arriesgar un cálculo mal hecho.
+const UNIT_TO_BASE = {
+  g: { family: "w", factor: 1 }, gr: { family: "w", factor: 1 }, gramo: { family: "w", factor: 1 }, gramos: { family: "w", factor: 1 },
+  kg: { family: "w", factor: 1000 }, kilo: { family: "w", factor: 1000 }, kilos: { family: "w", factor: 1000 },
+  ml: { family: "v", factor: 1 }, cc: { family: "v", factor: 1 }, cm3: { family: "v", factor: 1 },
+  l: { family: "v", factor: 1000 }, lt: { family: "v", factor: 1000 }, litro: { family: "v", factor: 1000 }, litros: { family: "v", factor: 1000 },
+  u: { family: "u", factor: 1 }, un: { family: "u", factor: 1 }, unid: { family: "u", factor: 1 }, unidad: { family: "u", factor: 1 }, unidades: { family: "u", factor: 1 }, docena: { family: "u", factor: 12 },
+};
+function convertQtyToUnit(qty, fromUnitRaw, toUnitRaw) {
+  const from = UNIT_TO_BASE[normalizeName(fromUnitRaw)];
+  const to   = UNIT_TO_BASE[normalizeName(toUnitRaw)];
+  if (!from || !to || from.family !== to.family) return null;
+  return (qty * from.factor) / to.factor;
+}
+// Unidad "prolija" para un ingrediente NUEVO creado a partir de lo pegado —
+// así, si se pegó en "cc", el ingrediente queda cargado en "ml" (misma
+// cantidad, no hace falta convertir nada).
+function canonicalUnit(rawUnit) {
+  const map = {
+    g: "g", gr: "g", gramo: "g", gramos: "g", kg: "kg", kilo: "kg", kilos: "kg",
+    ml: "ml", cc: "ml", cm3: "ml", l: "lt", lt: "lt", litro: "lt", litros: "lt",
+    u: "u", un: "u", unid: "u", unidad: "u", unidades: "u", docena: "u",
+  };
+  return map[normalizeName(rawUnit)] || rawUnit;
+}
+// Busca el ingrediente existente que corresponde a un nombre pegado: primero
+// exacto, después "parecido" (reusa isFuzzyMatch, ya probado con nombres de
+// ingredientes cortos como "sal" o "ají").
+function matchIngredientName(name, ingredients) {
+  const norm = normalizeName(name);
+  let match = ingredients.find(i => normalizeName(i.name) === norm);
+  if (!match) match = ingredients.find(i => isFuzzyMatch(i.name, name));
+  return match || null;
 }
 function unitCost(ing) {
   const base = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
@@ -3066,6 +3156,64 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   });
   const removeLine = idx => setForm(p => ({ ...p, recipe_ingredients: (p.recipe_ingredients || []).filter((_, i) => i !== idx) }));
 
+  // Pegar ingredientes: pegar una lista (nombre/cantidad/unidad, a veces en
+  // varias secciones) y resolverla contra los ingredientes existentes en vez
+  // de tipear línea por línea.
+  const [pasteIngText, setPasteIngText]         = useState("");
+  const [pasteIngResolved, setPasteIngResolved] = useState(null); // null = paso "pegar" · array = paso "revisar"
+  const [pasteIngSaving, setPasteIngSaving]     = useState(false);
+  const openPasteIng = () => { setPasteIngText(""); setPasteIngResolved(null); setModal("pasteIng"); };
+  const analyzePastedIngredients = () => {
+    const rows = consolidatePastedIngredientRows(parsePastedIngredientRows(pasteIngText));
+    const resolved = rows.map((row, i) => {
+      const ing = matchIngredientName(row.name, ingredients);
+      let qtyToLoad = row.qty, needsReview = false;
+      if (ing) {
+        const converted = convertQtyToUnit(row.qty, row.unit, ing.unit);
+        if (converted != null) qtyToLoad = Math.round(converted * 1000) / 1000;
+        else needsReview = true;
+      }
+      return { key: i, name: row.name, qty: row.qty, unit: row.unit, ingredientId: ing ? String(ing.id) : "__new__", qtyToLoad: String(qtyToLoad), needsReview };
+    });
+    setPasteIngResolved(resolved);
+  };
+  const applyPastedIngredients = async () => {
+    if (!pasteIngResolved || pasteIngResolved.length === 0) return;
+    setPasteIngSaving(true);
+    let currentIngredients = ingredients;
+    const toCreate = pasteIngResolved.filter(r => r.ingredientId === "__new__");
+    const createdMap = {};
+    if (toCreate.length > 0) {
+      const payload = toCreate.map(r => ({ name: r.name, category: "General", unit: canonicalUnit(r.unit), buy_price: 0, buy_qty: 1, waste_pct: 0 }));
+      const { data: newIngs, error } = await supabase.from("ingredients").insert(payload).select();
+      if (!error && newIngs) {
+        currentIngredients = sortByName([...currentIngredients, ...newIngs]);
+        setIngredients(currentIngredients);
+        toCreate.forEach((r, i) => { createdMap[r.key] = newIngs[i]; });
+      }
+    }
+    setForm(p => {
+      const arr = [...(p.recipe_ingredients || [])];
+      pasteIngResolved.forEach(r => {
+        const qty = +String(r.qtyToLoad).replace(",", ".");
+        if (!qty || qty <= 0) return;
+        const ingId = r.ingredientId === "__new__" ? createdMap[r.key]?.id : +r.ingredientId;
+        if (!ingId) return;
+        const existingIdx = arr.findIndex(l => String(l.ingredient_id) === String(ingId));
+        if (existingIdx >= 0) {
+          const prevQty = +arr[existingIdx].qty || 0;
+          arr[existingIdx] = { ...arr[existingIdx], qty: String(Math.round((prevQty + qty) * 1000) / 1000) };
+        } else {
+          arr.push({ ingredient_id: String(ingId), qty: String(qty) });
+        }
+      });
+      return { ...p, recipe_ingredients: arr };
+    });
+    setPasteIngSaving(false);
+    setPasteIngText(""); setPasteIngResolved(null);
+    setModal("form");
+  };
+
   const ingMap  = Object.fromEntries(ingredients.map(i => [i.id, i]));
   const recipe  = recipes.find(r => r.id === selected);
   useEffect(() => { setDetailMenu(false); }, [selected]);
@@ -3290,6 +3438,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                 <h4 className="text-sm font-semibold text-gray-700">Ingredientes</h4>
                 <div className="flex gap-3 items-center">
                   <button onClick={() => setShowUnitGuide(v => !v)} className="text-xs text-amber-600 hover:text-amber-700 font-medium">📐 Guía de unidades</button>
+                  <button onClick={openPasteIng} className="text-sm text-misky-600 hover:text-misky-700 font-medium">📋 Pegar ingredientes</button>
                   <button onClick={addLine} className="text-sm text-misky-600 hover:text-misky-700 font-medium">+ Agregar línea</button>
                 </div>
               </div>
@@ -3391,6 +3540,74 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           onClose={() => { setModal("form"); setQuickIngTarget(null); }}
           onSave={handleQuickIngSave}
         />
+      )}
+      {modal === "pasteIng" && (
+        <Modal title="Pegar ingredientes" onClose={() => setModal("form")} wide>
+          {!pasteIngResolved ? (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500">
+                Pegá la lista de ingredientes de la receta (nombre, cantidad y unidad — como viene de una planilla, separado por tabulaciones). Si la tenés dividida en secciones (relleno, salsa, etc.), pegá todo junto: los ingredientes repetidos en la misma unidad se suman solos.
+              </p>
+              <textarea value={pasteIngText} onChange={e => setPasteIngText(e.target.value)}
+                rows={12} placeholder={"espinaca\t150,00\tg\ncebolla\t52,50\tg\nleche\t15,00\tcc\n..."}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-misky-400" />
+              <div className="flex gap-3 justify-end">
+                <Btn variant="secondary" onClick={() => setModal("form")}>Cancelar</Btn>
+                <Btn onClick={analyzePastedIngredients} disabled={!pasteIngText.trim()}>Analizar</Btn>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pasteIngResolved.length === 0 ? (
+                <p className="text-sm text-gray-500 text-center py-4">No se detectó ningún ingrediente en el texto pegado. Revisá que cada línea tenga nombre, cantidad y unidad.</p>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-500">
+                    Se detectaron <strong>{pasteIngResolved.length}</strong> ingredientes. Revisá el ingrediente y la cantidad que va a cargar cada línea — las marcadas en amarillo no se pudieron convertir de forma automática (unidad distinta a la del ingrediente, tipo "diente" o "cabeza") y conviene chequearlas a mano.
+                  </p>
+                  <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+                    {pasteIngResolved.map(r => {
+                      const ing = r.ingredientId !== "__new__" ? ingMap[+r.ingredientId] : null;
+                      return (
+                        <div key={r.key} className={`flex gap-2 items-center p-2 rounded-lg ${r.needsReview ? "bg-amber-50 border border-amber-200" : "bg-gray-50"}`}>
+                          <div className="w-36 flex-shrink-0 text-xs text-gray-500 truncate" title={r.name}>
+                            {r.name}<br /><span className="text-gray-400">{r.qty} {r.unit}</span>
+                          </div>
+                          <select value={r.ingredientId}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setPasteIngResolved(prev => prev.map(x => {
+                                if (x.key !== r.key) return x;
+                                if (val === "__new__") return { ...x, ingredientId: val, qtyToLoad: String(x.qty), needsReview: false };
+                                const newIng = ingMap[+val];
+                                const converted = convertQtyToUnit(x.qty, x.unit, newIng.unit);
+                                return { ...x, ingredientId: val, qtyToLoad: String(converted != null ? Math.round(converted * 1000) / 1000 : x.qty), needsReview: converted == null };
+                              }));
+                            }}
+                            className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-misky-400">
+                            <option value="__new__">✚ Crear nuevo ingrediente ({canonicalUnit(r.unit)})</option>
+                            <option disabled>──────────────</option>
+                            {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+                          </select>
+                          <input type="number" min="0" step="0.001" value={r.qtyToLoad}
+                            onChange={e => setPasteIngResolved(prev => prev.map(x => x.key === r.key ? { ...x, qtyToLoad: e.target.value } : x))}
+                            className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-right focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                          <span className="w-10 text-xs text-gray-400 flex-shrink-0">{ing ? ing.unit : canonicalUnit(r.unit)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              <div className="flex gap-3 justify-end pt-2">
+                <Btn variant="secondary" onClick={() => setPasteIngResolved(null)}>← Volver a pegar</Btn>
+                <Btn onClick={applyPastedIngredients} disabled={pasteIngSaving || pasteIngResolved.length === 0}>
+                  {pasteIngSaving ? "Cargando..." : "Cargar en la receta"}
+                </Btn>
+              </div>
+            </div>
+          )}
+        </Modal>
       )}
       {modal === "import" && (
         <ImportRecipesCSVModal
