@@ -1181,6 +1181,34 @@ function Modal({ title, onClose, children, wide = false }) {
     </div>
   );
 }
+// Confirmación para borrados definitivos (recetas/ingredientes) — no hay
+// papelera ni backup automático (plan free de Supabase), así que antes de
+// borrar de verdad se avisa bien claro que no se puede deshacer, en vez de
+// borrar apenas se toca el botón.
+function ConfirmDeleteModal({ title, message, confirmLabel = "Sí, eliminar definitivamente", onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5">
+        <div className="flex items-start gap-3 mb-3">
+          <span className="text-3xl flex-shrink-0">⚠️</span>
+          <div>
+            <h2 className="font-bold text-gray-800 text-lg">{title}</h2>
+            <p className="text-sm text-gray-600 mt-1">{message}</p>
+          </div>
+        </div>
+        <p className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 mb-4">
+          Esta acción es DEFINITIVA: se borra de la base de datos y no hay forma de recuperarlo después — no existe una papelera ni una copia de respaldo automática.
+        </p>
+        <div className="flex gap-3 justify-end">
+          <Btn variant="secondary" onClick={onCancel}>Cancelar</Btn>
+          <button onClick={onConfirm} className="bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-lg px-4 py-2.5 transition-colors">
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function Field({ label, children }) {
   return (
     <div>
@@ -2472,6 +2500,7 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
   const [batchSaving, setBatchSaving] = useState(false);
   const [editCell, setEditCell] = useState(null); // {id, field}
   const [editVal, setEditVal]   = useState("");
+  const [delConfirm, setDelConfirm] = useState(null); // {title, message, action}
   const NUMERIC_FIELDS = ["buy_price", "buy_qty", "waste_pct"];
   const startEdit = (ing, field) => { setEditCell({ id: ing.id, field }); setEditVal(String(ing[field] ?? "")); };
   const saveEdit = async () => {
@@ -2617,7 +2646,11 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
         <div className="flex items-center gap-3 mb-3 bg-misky-50 border border-misky-100 rounded-xl px-4 py-2.5 flex-wrap">
           <span className="text-sm font-semibold text-misky-700">{selectedIds.size} seleccionados</span>
           <button onClick={() => setModal("batchEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote</button>
-          {isAdmin && <button onClick={deleteBatch} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>}
+          {isAdmin && <button onClick={() => setDelConfirm({
+              title: `¿Eliminar ${selectedIds.size} ingrediente${selectedIds.size !== 1 ? "s" : ""}?`,
+              message: "Se van a borrar también de todas las recetas que los usan.",
+              action: deleteBatch,
+            })} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar seleccionados</button>}
           <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
         </div>
       )}
@@ -2671,7 +2704,11 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button onClick={() => openEdit(ing)} className="text-gray-400 hover:text-misky-600">✏️</button>
-                        {isAdmin && <button onClick={() => del(ing.id, ing.name)} className="text-gray-400 hover:text-rose-500">🗑</button>}
+                        {isAdmin && <button onClick={() => setDelConfirm({
+                            title: `¿Eliminar "${ing.name}"?`,
+                            message: "Si alguna receta lo usa, va a quedar sin ese ingrediente.",
+                            action: () => del(ing.id, ing.name),
+                          })} className="text-gray-400 hover:text-rose-500">🗑</button>}
                       </div>
                     </td>
                   )}
@@ -2785,6 +2822,14 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
           setIngredients(sortByName(existing));
           await logActivity(profile, "import", "ingredientes", rows.length + " ingredientes");
         }} />
+      )}
+      {delConfirm && (
+        <ConfirmDeleteModal
+          title={delConfirm.title}
+          message={delConfirm.message}
+          onCancel={() => setDelConfirm(null)}
+          onConfirm={() => { delConfirm.action(); setDelConfirm(null); }}
+        />
       )}
     </div>
   );
@@ -2942,6 +2987,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   const [detailMenu, setDetailMenu] = useState(false);
   const [editingCat, setEditingCat] = useState(null);
   const [editingCatValue, setEditingCatValue] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null); // {title, message, action}
 
   const saveCategoryInline = async (id) => {
     const val = editingCatValue.trim();
@@ -3340,7 +3386,14 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                       <button onClick={() => { setDetailMenu(false); openDuplicate(recipe); }}
                         className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">📄 Duplicar</button>
                       {profile?.role === "admin" && (
-                        <button onClick={() => { setDetailMenu(false); del(recipe.id, recipe.name); }}
+                        <button onClick={() => {
+                            setDetailMenu(false);
+                            setDelConfirm({
+                              title: `¿Eliminar "${recipe.name}"?`,
+                              message: "La receta y sus ingredientes cargados se van a borrar de la base de datos.",
+                              action: () => del(recipe.id, recipe.name),
+                            });
+                          }}
                           className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50">🗑 Eliminar</button>
                       )}
                     </div>
@@ -3615,6 +3668,14 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           onImport={importRecipesCSV}
           recipes={recipes}
           ingredients={ingredients}
+        />
+      )}
+      {delConfirm && (
+        <ConfirmDeleteModal
+          title={delConfirm.title}
+          message={delConfirm.message}
+          onCancel={() => setDelConfirm(null)}
+          onConfirm={() => { delConfirm.action(); setDelConfirm(null); }}
         />
       )}
     </div>
@@ -4083,6 +4144,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const [bulkAddIng, setBulkAddIng] = useState({ ingredientId: "", qty: "" });
   const [bulkRemoveIngId, setBulkRemoveIngId] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [delConfirm, setDelConfirm] = useState(null); // {title, message, action}
   // Pegar una lista de nombres (ej. de un menú armado en Word) y seleccionar
   // de una todas las recetas que matcheen, en vez de buscar una por una.
   const [pasteText, setPasteText]     = useState("");
@@ -4331,7 +4393,11 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <button onClick={() => downloadRecipesText(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir {selectedCount} receta{selectedCount !== 1 ? "s" : ""}</button>
             <button onClick={() => downloadShoppingListHTML(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
             <button onClick={() => setModal("bulkEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote ({selectedCount})</button>
-            {profile?.role === "admin" && <button onClick={deleteSelected} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>}
+            {profile?.role === "admin" && <button onClick={() => setDelConfirm({
+                title: `¿Eliminar ${selectedCount} receta${selectedCount !== 1 ? "s" : ""}?`,
+                message: "Se van a borrar de la base de datos junto con sus ingredientes cargados.",
+                action: deleteSelected,
+              })} className="text-sm text-rose-600 hover:text-rose-700 font-medium underline">🗑 Eliminar</button>}
           </div>
         </div>
       )}
@@ -4581,6 +4647,14 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             </div>
           </div>
         </Modal>
+      )}
+      {delConfirm && (
+        <ConfirmDeleteModal
+          title={delConfirm.title}
+          message={delConfirm.message}
+          onCancel={() => setDelConfirm(null)}
+          onConfirm={() => { delConfirm.action(); setDelConfirm(null); }}
+        />
       )}
     </div>
   );
