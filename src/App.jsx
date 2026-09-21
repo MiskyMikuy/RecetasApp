@@ -539,7 +539,10 @@ function downloadCSV(content, filename) {
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  // Margen antes de borrar la URL temporal \u2014 en el celular el navegador a
+  // veces todav\u00EDa est\u00E1 guardando el archivo cuando ya se hab\u00EDa borrado,
+  // dejando una descarga vac\u00EDa (0 KB) o colgando la app.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ─── LOGO MISKY MIKUY (embebido en base64, para los documentos HTML descargables) ──
@@ -556,19 +559,25 @@ function downloadTextFile(content, filename) {
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function downloadHTMLFile(content, filename) {
+// Para los HTML pensados para imprimir/guardar como PDF (recetario, lista de
+// compras, mise en place): en vez de descargar el archivo y que el usuario
+// tenga que ir a buscarlo y abrirlo aparte, se abre directo en una pestaña
+// nueva del navegador. En Android, imprimir/"Guardar como PDF" un archivo
+// .html ya descargado (abierto desde el visor de Descargas) a veces genera
+// un PDF vacío — abriéndolo como una pestaña normal del navegador en vez de
+// un archivo local, el botón "Imprimir / Guardar PDF" de adentro funciona
+// de forma confiable.
+function openHTMLInNewTab(content) {
   const blob = new Blob([content], { type: "text/html;charset=utf-8;" });
   const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  // En computadora borrar el archivo temporal enseguida no se nota, pero en
-  // el celular el navegador a veces todavía está abriendo/guardando el
-  // archivo cuando se borra — ahí es cuando el PDF sale vacío o se cuelga la
-  // app. Dándole un segundo de margen antes de borrarlo se evita eso.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.open(url, "_blank");
+  // Acá el margen es más largo que en una descarga: la pestaña sigue usando
+  // esta misma URL mientras está abierta (para el logo embebido, etc.), así
+  // que hay que darle bastante tiempo antes de liberarla.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // Genera un recetario en HTML con diseño institucional (logo y colores de
@@ -674,7 +683,7 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Recetas.html");
+  openHTMLInNewTab(html);
 }
 
 // Genera una lista de compras imprimible en HTML, sumando los ingredientes de
@@ -873,7 +882,7 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Lista_de_compras.html");
+  openHTMLInNewTab(html);
 }
 
 // Genera una lista de "mise en place": para las recetas elegidas, suma cuánto
@@ -1069,7 +1078,7 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  downloadHTMLFile(html, "RecetApp_MiskyMikuy_Mise_en_place.html");
+  openHTMLInNewTab(html);
 }
 
 function exportCSV(recipes, ingredients, business) {
@@ -1733,7 +1742,7 @@ function AdminPanel({ profile }) {
                 const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a"); a.href=url; a.download="RecetApp_Usuarios.csv"; a.click();
-                URL.revokeObjectURL(url);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
               }}>⬇️ CSV</Btn>
               <Btn onClick={() => { setForm(emptyForm); setMsg(""); setModal("newUser"); }}>
                 + Nuevo usuario
@@ -1802,7 +1811,7 @@ function AdminPanel({ profile }) {
             const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a"); a.href=url; a.download="RecetApp_Actividad.csv"; a.click();
-            URL.revokeObjectURL(url);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
           }}>⬇️ CSV Actividad</Btn>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
@@ -2047,7 +2056,7 @@ function ImportCSVModal({ onClose, onImport }) {
             const blob = new Blob(["\uFEFF"+c],{type:"text/csv;charset=utf-8;"});
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a"); a.href=url; a.download="plantilla_ingredientes.csv"; a.click();
-            URL.revokeObjectURL(url);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
           }} className="text-sm text-misky-600 hover:text-misky-700 font-medium underline">
             ⬇️ Descargar plantilla CSV
           </button>
