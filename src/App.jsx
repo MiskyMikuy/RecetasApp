@@ -564,7 +564,11 @@ function downloadHTMLFile(content, filename) {
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  // En computadora borrar el archivo temporal enseguida no se nota, pero en
+  // el celular el navegador a veces todavía está abriendo/guardando el
+  // archivo cuando se borra — ahí es cuando el PDF sale vacío o se cuelga la
+  // app. Dándole un segundo de margen antes de borrarlo se evita eso.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // Genera un recetario en HTML con diseño institucional (logo y colores de
