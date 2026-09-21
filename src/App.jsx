@@ -646,8 +646,12 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
     .print-page { max-width: none; page-break-after: always; margin-top: 0; flex-direction: row; }
     .print-page:last-child { page-break-after: avoid; }
     .recipe { box-shadow: none; border: 1px solid #e5e7eb; }
-    .footer { page-break-before: avoid; }
-    .page-header, .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    /* El encabezado con el logo y el pie de página son solo para la vista en
+       pantalla (antes de imprimir) — al imprimir se sacan del todo, porque si
+       no ocupan lugar de sobra y empujan una hoja extra en blanco (al
+       principio por el encabezado, o al final por el pie). */
+    .page-header, .footer { display: none; }
+    .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
   }
 </style>
@@ -2048,7 +2052,7 @@ function ImportCSVModal({ onClose, onImport }) {
             <div className="text-4xl mb-2">📂</div>
             <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
             <p className="text-xs text-gray-400 mt-1">CSV separado por comas o punto y coma</p>
-            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+            <input ref={fileRef} type="file" accept=".csv,.txt,*/*" className="hidden" onChange={handleFile} />
           </div>
           {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
           <div className="flex justify-end"><Btn variant="secondary" onClick={onClose}>Cancelar</Btn></div>
@@ -2163,7 +2167,7 @@ function ImportRecipesCSVModal({ onClose, onImport, recipes, ingredients }) {
             <div className="text-4xl mb-2">📂</div>
             <p className="text-gray-600 font-medium">Hacé clic para seleccionar el archivo</p>
             <p className="text-xs text-gray-400 mt-1">CSV separado por comas o punto y coma</p>
-            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+            <input ref={fileRef} type="file" accept=".csv,.txt,*/*" className="hidden" onChange={handleFile} />
           </div>
           {error && <p className="text-rose-500 text-sm bg-rose-50 px-3 py-2 rounded-lg">⚠️ {error}</p>}
           <div className="flex justify-end"><Btn variant="secondary" onClick={onClose}>Cancelar</Btn></div>
@@ -2999,6 +3003,16 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   const [form, setForm]         = useState({});
   const [saving, setSaving]       = useState(false);
   const [quickIngTarget, setQuickIngTarget] = useState(null);
+  // En el celular, la lista y el detalle quedan apilados (uno abajo del
+  // otro) — al tocar una receta de la lista, bajamos solos hasta el
+  // detalle para no obligar a scrollear a mano.
+  const detailRef = useRef(null);
+  const selectRecipe = (id) => {
+    setSelected(id);
+    if (window.innerWidth < 768) {
+      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    }
+  };
   const [showUnitGuide, setShowUnitGuide]   = useState(false);
   // Editar el precio de compra de un ingrediente sin salir del formulario de
   // receta (antes solo se podía desde la pestaña Ingredientes) — actualiza el
@@ -3278,9 +3292,13 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   })();
 
   return (
-    <div className="flex gap-5">
+    // En el celular (pantalla angosta) la lista y el detalle se apilan uno
+    // debajo del otro en vez de ir lado a lado — antes el detalle (con el
+    // botón Editar) quedaba apretado fuera de pantalla y solo se veía
+    // girando el celular a horizontal.
+    <div className="flex flex-col md:flex-row gap-5">
       {/* Sidebar */}
-      <div className="w-72 flex-shrink-0 space-y-2">
+      <div className="w-full md:w-72 md:flex-shrink-0 space-y-2">
         {canEdit && (
           <div className="flex rounded-lg border border-gray-200 overflow-hidden">
             <button onClick={() => setMode("ver")}
@@ -3329,7 +3347,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
           return (
             <div key={r.id}
               className={`bg-white rounded-xl border p-3 transition-all hover:shadow-md ${selected === r.id ? "border-misky-400 shadow-md" : "border-gray-100"}`}>
-              <div className="cursor-pointer" onClick={() => setSelected(r.id)}>
+              <div className="cursor-pointer" onClick={() => selectRecipe(r.id)}>
                 <p className="font-semibold text-gray-800 text-sm leading-tight">{r.name}</p>
                 <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1 flex-wrap">
                   {mode === "gestionar" && editingCat === r.id ? (
@@ -3369,7 +3387,7 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
       </div>
 
       {/* Detail */}
-      <div className="flex-1 min-w-0">
+      <div ref={detailRef} className="flex-1 min-w-0">
         {recipe && calc ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="bg-gradient-to-r from-misky-700 to-misky-600 px-6 py-5 flex items-start justify-between">
@@ -4070,7 +4088,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
       )}
 
       {selected.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-30">
+        <div className="fixed bottom-16 md:bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-30">
           <div className="max-w-2xl mx-auto p-3">
             {phoneBarOpen && (
               <div className="space-y-2 mb-2">
@@ -4917,7 +4935,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img src="/logo-icono.svg" alt="Misky Mikuy" className="h-8 w-8" />
-            <span className="font-bold text-gray-800 text-lg">RecetApp</span>
+            <span className="font-bold text-gray-800 text-lg">RecetApp MM</span>
           </div>
           <nav className="hidden md:flex gap-1">
             {TABS.map(t => (
@@ -4947,16 +4965,25 @@ export default function App() {
             <button onClick={logout} className="text-sm text-gray-400 hover:text-gray-700 transition-colors">Salir</button>
           </div>
         </div>
-        <div className="md:hidden flex overflow-x-auto border-t border-gray-100 px-2 py-1 gap-1">
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`flex-shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg ${tab === t.id ? "bg-misky-50 text-misky-700" : "text-gray-500"}`}>
-              {t.label}
-            </button>
-          ))}
-        </div>
       </header>
-      <main className="max-w-7xl mx-auto px-4 py-5">
+      {/* Menú del celular: barra fija abajo de la pantalla, estilo iPhone
+          (antes era una fila arriba, debajo del header, menos cómoda de
+          usar con el pulgar). En pantallas grandes no se muestra — ahí el
+          menú de arriba ya alcanza. */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 shadow-[0_-2px_10px_rgba(0,0,0,0.06)] z-40 flex"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+        {TABS.map(t => {
+          const [emoji, ...rest] = t.label.split(" ");
+          return (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-w-0 ${tab === t.id ? "text-misky-600" : "text-gray-400"}`}>
+              <span className="text-lg leading-none">{emoji}</span>
+              <span className="text-[10px] font-medium leading-none truncate max-w-full px-0.5">{rest.join(" ")}</span>
+            </button>
+          );
+        })}
+      </nav>
+      <main className="max-w-7xl mx-auto px-4 py-5 pb-24 md:pb-5">
         {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile}
                                      cartSel={cartSel} setCartSel={setCartSel} cartBatch={cartBatch} setCartBatch={setCartBatch}
                                      cartLabel={cartLabel} setCartLabel={setCartLabel}
