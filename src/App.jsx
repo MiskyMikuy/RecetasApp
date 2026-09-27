@@ -2287,6 +2287,68 @@ function QuickAddIngredientModal({ onClose, onSave }) {
   );
 }
 
+// Edición completa de un ingrediente sin salir del formulario de receta —
+// antes solo dejaba tocar el precio con un input chiquito al lado del
+// nombre; ahora abre el mismo formulario completo que la pestaña
+// Ingredientes (nombre, categoría, unidad, precio, cantidad, merma), como en
+// RecetApp SA. Actualiza el ingrediente real, así que el cambio se refleja
+// en todas las recetas que lo usan, no solo en esta.
+function EditIngredientModal({ ingredient, onClose, onSave }) {
+  const [form, setForm] = useState({
+    name: ingredient.name || "",
+    category: ingredient.category || "",
+    unit: ingredient.unit || "",
+    buy_price: String(ingredient.buy_price ?? ""),
+    buy_qty: String(ingredient.buy_qty ?? "1"),
+    waste_pct: String(ingredient.waste_pct ?? "0"),
+  });
+  const [saving, setSaving] = useState(false);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const previewCost = () => {
+    const qty = +form.buy_qty || 0; const price = +form.buy_price || 0; const waste = +form.waste_pct || 0;
+    if (qty <= 0) return "0.0000";
+    const base = price / qty;
+    return waste > 0 ? (base / (1 - waste / 100)).toFixed(4) : base.toFixed(4);
+  };
+  const save = async () => {
+    if (!form.name.trim() || saving) return;
+    setSaving(true);
+    await onSave({
+      name: form.name.trim(), category: form.category.trim(), unit: form.unit.trim(),
+      buy_price: +form.buy_price || 0, buy_qty: +form.buy_qty || 0, waste_pct: +form.waste_pct || 0,
+    });
+    setSaving(false);
+  };
+  return (
+    <Modal title={`Editar ingrediente: ${ingredient.name}`} onClose={onClose}>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="col-span-2">
+          <Field label="Nombre"><TextInput value={form.name} onChange={f("name")} /></Field>
+        </div>
+        <Field label="Categoría"><TextInput value={form.category} onChange={f("category")} placeholder="Ej: Secos" /></Field>
+        <Field label="Unidad"><TextInput value={form.unit} onChange={f("unit")} placeholder="kg, lt, u, ml" /></Field>
+        <Field label="Precio de compra ($)"><TextInput value={form.buy_price} onChange={f("buy_price")} type="number" min="0" step="0.01" /></Field>
+        <Field label="Cantidad que comprás"><TextInput value={form.buy_qty} onChange={f("buy_qty")} type="number" min="0.001" step="0.001" /></Field>
+        <Field label="% Merma"><TextInput value={form.waste_pct} onChange={f("waste_pct")} type="number" min="0" max="100" step="0.1" suffix="%" /></Field>
+        <div className="bg-misky-50 rounded-xl p-4 flex flex-col justify-center">
+          <p className="text-xs text-misky-600 font-medium mb-1">Costo neto x unidad</p>
+          <p className="text-2xl font-bold text-misky-700">${previewCost()}</p>
+        </div>
+      </div>
+      {form.unit && UNIT_GUIDE.find(g => g.unit === form.unit) && (
+        <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-700">
+          💡 <strong>{form.unit}</strong>: {UNIT_GUIDE.find(g => g.unit === form.unit).recipe}
+        </div>
+      )}
+      <p className="text-xs text-gray-400 mt-3">Se actualiza en todas las recetas que usan este ingrediente, no solo en esta.</p>
+      <div className="flex gap-3 mt-4 justify-end">
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={saving || !form.name.trim()}>{saving ? "Guardando..." : "Guardar cambios"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, profile }) {
   // Grupos por nombre EXACTO (ya ignora mayúsculas/acentos) — se detectan solos.
   const exactGroups = useMemo(() => {
@@ -3027,19 +3089,19 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     }
   };
   const [showUnitGuide, setShowUnitGuide]   = useState(false);
-  // Editar el precio de compra de un ingrediente sin salir del formulario de
-  // receta (antes solo se podía desde la pestaña Ingredientes) — actualiza el
-  // ingrediente real, así que el nuevo precio se refleja en TODAS las recetas
-  // que lo usan, no solo en esta.
-  const [editIngId, setEditIngId]   = useState(null);
-  const [editIngVal, setEditIngVal] = useState("");
-  const saveIngPrice = async () => {
-    if (!editIngId) return;
-    const id = editIngId;
-    const value = +editIngVal || 0;
-    setEditIngId(null);
-    const { data, error } = await supabase.from("ingredients").update({ buy_price: value }).eq("id", id).select().single();
-    if (!error && data) setIngredients(prev => prev.map(i => i.id === id ? data : i));
+  // Editar un ingrediente completo (nombre, categoría, unidad, precio,
+  // cantidad, merma) sin salir del formulario de receta — antes solo dejaba
+  // tocar el precio con un inputcito al lado. Actualiza el ingrediente real,
+  // así que el cambio se refleja en TODAS las recetas que lo usan, no solo
+  // en esta.
+  const [editIngTarget, setEditIngTarget] = useState(null); // el ingrediente que se está editando, o null
+  const saveEditedIngredient = async (payload) => {
+    if (!editIngTarget) return;
+    const id = editIngTarget.id;
+    const { data, error } = await supabase.from("ingredients").update(payload).eq("id", id).select().single();
+    if (!error && data) setIngredients(prev => sortByName(prev.map(i => i.id === id ? data : i)));
+    setModal("form");
+    setEditIngTarget(null);
   };
 
   useEffect(() => {
@@ -3565,23 +3627,12 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
                         placeholder="Cant."
                         className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
                       {ing && (
-                        editIngId === ing.id ? (
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            <input autoFocus type="number" min="0" step="0.01" value={editIngVal}
-                              onChange={e => setEditIngVal(e.target.value)}
-                              onKeyDown={e => { if (e.key === "Enter") saveIngPrice(); if (e.key === "Escape") setEditIngId(null); }}
-                              className="w-20 border border-misky-300 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-misky-400" />
-                            <button onClick={saveIngPrice} title="Guardar precio" className="text-green-600 hover:text-green-700 text-sm">✓</button>
-                            <button onClick={() => setEditIngId(null)} title="Cancelar" className="text-gray-300 hover:text-rose-400 text-sm">✕</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => { setEditIngId(ing.id); setEditIngVal(String(ing.buy_price ?? "")); }}
-                            title={`Editar precio de compra de "${ing.name}" (se actualiza en todas las recetas que lo usan)`}
-                            className="flex items-center gap-1 flex-shrink-0 group">
-                            <span className="text-xs font-semibold text-misky-600 w-16 text-right">{sub ? `$${sub}` : "—"}</span>
-                            <span className="text-gray-300 group-hover:text-misky-500 text-xs">✎</span>
-                          </button>
-                        )
+                        <button onClick={() => { setEditIngTarget(ing); setModal("editIng"); }}
+                          title={`Editar "${ing.name}" (se actualiza en todas las recetas que lo usan)`}
+                          className="flex items-center gap-1 flex-shrink-0 group">
+                          <span className="text-base leading-none">✏️</span>
+                          <span className="text-xs font-semibold text-misky-600 w-16 text-right">{sub ? `$${sub}` : "—"}</span>
+                        </button>
                       )}
                       <button onClick={() => removeLine(idx)} className="text-gray-300 hover:text-rose-400 text-lg flex-shrink-0">×</button>
                     </div>
@@ -3623,6 +3674,13 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
         <QuickAddIngredientModal
           onClose={() => { setModal("form"); setQuickIngTarget(null); }}
           onSave={handleQuickIngSave}
+        />
+      )}
+      {modal === "editIng" && editIngTarget && (
+        <EditIngredientModal
+          ingredient={editIngTarget}
+          onClose={() => { setModal("form"); setEditIngTarget(null); }}
+          onSave={saveEditedIngredient}
         />
       )}
       {modal === "pasteIng" && (
@@ -4101,7 +4159,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
       )}
 
       {selected.length > 0 && (
-        <div className="fixed bottom-16 md:bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-30">
+        <div className="fixed bottom-[calc(4rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] z-50">
           <div className="max-w-2xl mx-auto p-3">
             {phoneBarOpen && (
               <div className="space-y-2 mb-2">
