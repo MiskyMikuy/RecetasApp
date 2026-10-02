@@ -563,21 +563,18 @@ function downloadTextFile(content, filename) {
 }
 
 // Para los HTML pensados para imprimir/guardar como PDF (recetario, lista de
-// compras, mise en place): en vez de descargar el archivo y que el usuario
-// tenga que ir a buscarlo y abrirlo aparte, se abre directo en una pestaña
-// nueva del navegador. En Android, imprimir/"Guardar como PDF" un archivo
-// .html ya descargado (abierto desde el visor de Descargas) a veces genera
-// un PDF vacío — abriéndolo como una pestaña normal del navegador en vez de
-// un archivo local, el botón "Imprimir / Guardar PDF" de adentro funciona
-// de forma confiable.
-function openHTMLInNewTab(content) {
+// compras, mise en place): antes se abrían en una pestaña nueva del
+// navegador (window.open) para evitar el PDF vacío al imprimir un archivo
+// .html ya descargado. Pero en la app instalada desde el ícono del celular
+// (modo "app", sin barra de navegador) no existen pestañas nuevas — ahí
+// window.open no hace nada, en silencio, y el botón parecía no responder.
+// Ahora se navega la MISMA ventana al contenido, que funciona igual entrando
+// por el navegador o por el ícono instalado; cada una de estas páginas tiene
+// un enlace "⬅ Volver a RecetApp" para regresar.
+function openGeneratedHTML(content) {
   const blob = new Blob([content], { type: "text/html;charset=utf-8;" });
   const url  = URL.createObjectURL(blob);
-  window.open(url, "_blank");
-  // Acá el margen es más largo que en una descarga: la pestaña sigue usando
-  // esta misma URL mientras está abierta (para el logo embebido, etc.), así
-  // que hay que darle bastante tiempo antes de liberarla.
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  window.location.href = url;
 }
 
 // Genera un recetario en HTML con diseño institucional (logo y colores de
@@ -623,6 +620,7 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Recetario — Misky Mikuy</title>
 <style>
   :root { --brand: #612577; --brand-dark: #351740; }
@@ -632,9 +630,13 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   .page-header img { height: 44px; }
   .page-header h1 { color: white; font-size: 21px; margin: 0; }
   .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
-  /* Hoja apaisada: 2 recetas lado a lado por página, para gastar menos papel. */
-  .print-page { display: flex; gap: 16px; align-items: flex-start; max-width: 1050px; margin: 16px auto 0; }
-  .recipe { background: white; flex: 1; min-width: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
+  /* Hoja apaisada: 2 recetas lado a lado por página, para gastar menos papel.
+     flex-wrap: wrap como respaldo — si el celular/impresora termina usando
+     una hoja más angosta de lo esperado (algunos celulares Android ignoran
+     el pedido de hoja apaisada), las recetas pasan a apilarse en vez de
+     quedar cortadas o amontonadas. */
+  .print-page { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; max-width: 1050px; margin: 16px auto 0; }
+  .recipe { background: white; flex: 1 1 320px; min-width: 280px; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
   .recipe-header { background: var(--brand); color: white; padding: 14px 16px; }
   .recipe-header h2 { margin: 0; font-size: 20px; }
   .recipe-header p { margin: 4px 0 0; font-size: 13px; color: #ecdcf2; }
@@ -650,6 +652,8 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
   .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .print-btn:hover { background: #f9f4fb; }
+  .back-btn { position: fixed; top: 20px; left: 24px; background: white; color: #6b7280; border: none; border-radius: 999px; padding: 10px 18px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .back-btn:hover { background: #f3f4f6; }
   /* En el celular no hay lugar para 2 recetas lado a lado — se apilan y se ven
      bien igual; en pantallas grandes y al imprimir quedan una al lado de otra. */
   @media (max-width: 720px) { .print-page { flex-direction: column; } }
@@ -666,10 +670,12 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
     .page-header, .footer { display: none; }
     .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
+    .back-btn { display: none; }
   }
 </style>
 </head>
 <body>
+  <button class="back-btn" onclick="history.back()">⬅ Volver a RecetApp</button>
   <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
   <div class="page-header">
     <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
@@ -683,7 +689,7 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  openHTMLInNewTab(html);
+  openGeneratedHTML(html);
 }
 
 // Genera una lista de compras imprimible en HTML, sumando los ingredientes de
@@ -754,6 +760,7 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Lista de compras — Misky Mikuy</title>
 <style>
   :root { --brand: #612577; --brand-dark: #351740; }
@@ -795,6 +802,8 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
   .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
   .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .print-btn:hover { background: #f9f4fb; }
+  .back-btn { position: fixed; top: 20px; left: 24px; background: white; color: #6b7280; border: none; border-radius: 999px; padding: 10px 18px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .back-btn:hover { background: #f3f4f6; }
   .reset-btn { background: none; border: none; color: #9ca3af; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 0; }
   @media (max-width: 480px) {
     .col-para { display: none; }
@@ -804,11 +813,13 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
     .wrap { box-shadow: none; border: 1px solid #e5e7eb; }
     .page-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
+    .back-btn { display: none; }
     .reset-btn { display: none; }
   }
 </style>
 </head>
 <body>
+  <button class="back-btn" onclick="history.back()">⬅ Volver a RecetApp</button>
   <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
   <div class="page-header">
     <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
@@ -882,7 +893,7 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  openHTMLInNewTab(html);
+  openGeneratedHTML(html);
 }
 
 // Genera una lista de "mise en place": para las recetas elegidas, suma cuánto
@@ -956,6 +967,7 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Mise en place — Misky Mikuy</title>
 <style>
   :root { --brand: #612577; --brand-dark: #351740; }
@@ -994,6 +1006,8 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
   .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
   .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .print-btn:hover { background: #f9f4fb; }
+  .back-btn { position: fixed; top: 20px; left: 24px; background: white; color: #6b7280; border: none; border-radius: 999px; padding: 10px 18px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
+  .back-btn:hover { background: #f3f4f6; }
   .reset-btn { background: none; border: none; color: #9ca3af; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 0; }
   @media (max-width: 480px) {
     .col-para { display: none; }
@@ -1003,11 +1017,13 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
     .wrap { box-shadow: none; border: 1px solid #e5e7eb; }
     .page-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
+    .back-btn { display: none; }
     .reset-btn { display: none; }
   }
 </style>
 </head>
 <body>
+  <button class="back-btn" onclick="history.back()">⬅ Volver a RecetApp</button>
   <button class="print-btn" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
   <div class="page-header">
     <img src="data:image/png;base64,${LOGO_MM_BASE64}" alt="Misky Mikuy" />
@@ -1078,7 +1094,7 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  openHTMLInNewTab(html);
+  openGeneratedHTML(html);
 }
 
 function exportCSV(recipes, ingredients, business) {
