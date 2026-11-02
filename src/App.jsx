@@ -2589,217 +2589,268 @@ function EditIngredientModal({ ingredient, onClose, onSave }) {
   );
 }
 
-function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, profile }) {
-  // Grupos por nombre EXACTO (ya ignora mayúsculas/acentos) — se detectan solos.
-  const exactGroups = useMemo(() => {
-    const map = {};
-    ingredients.forEach(i => {
-      const key = normalizeName(i.name);
-      if (!map[key]) map[key] = [];
-      map[key].push(i);
-    });
-    return Object.entries(map).filter(([, g]) => g.length > 1).map(([key, g]) => ({ key: `exact:${key}`, items: g }));
-  }, [ingredients]);
-  const exactIds = useMemo(() => new Set(exactGroups.flatMap(g => g.items.map(i => i.id))), [exactGroups]);
+// ─── FUSIONAR DUPLICADOS ─────────────────────────────────────────────────────
+// Arregla textos con acentos rotos de importaciones viejas ("AjÃ­ molido" →
+// "Ají molido"). Si el texto no está roto, lo devuelve igual.
+function fixMojibake(s) {
+  const str = (s == null ? "" : String(s));
+  if (!/[ÂÃ]/.test(str)) return str;
+  try {
+    const bytes = Uint8Array.from(Array.from(str).map(c => c.charCodeAt(0)));
+    if (Array.from(bytes).some((b, i) => b !== str.charCodeAt(i))) return str;
+    const out = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return out.trim() ? out : str;
+  } catch { return str; }
+}
 
-  // Pares de nombres PARECIDOS (no idénticos) entre los ingredientes que no
-  // están ya en un grupo exacto — se ofrecen para que el usuario confirme uno
-  // por uno si son o no el mismo ingrediente, antes de sumarlos a la fusión.
-  const fuzzyPairs = useMemo(() => {
-    const singles = ingredients.filter(i => !exactIds.has(i.id));
-    const pairs = [];
-    for (let i = 0; i < singles.length; i++) {
-      for (let j = i + 1; j < singles.length; j++) {
-        const a = singles[i], b = singles[j];
-        if (isFuzzyMatch(a.name, b.name)) {
-          pairs.push({ key: `fuzzy:${[a.id, b.id].sort().join(":")}`, items: [a, b] });
-        }
-      }
-    }
-    return pairs;
-  }, [ingredients, exactIds]);
-
-  const [confirmedFuzzyKeys, setConfirmedFuzzyKeys] = useState(() => new Set());
-  const toggleFuzzyConfirm = (key) => setConfirmedFuzzyKeys(prev => {
-    const next = new Set(prev);
-    next.has(key) ? next.delete(key) : next.add(key);
-    return next;
+// Fusiona en la base de datos: pasa a "survivorId" todo lo que usaban los
+// duplicados (sumando cantidades si una receta tenía varios) y SOLO al final,
+// si todo salió bien, borra los duplicados. Cada paso se verifica: si la base
+// rechaza algo, se frena sin perder ingredientes de ninguna receta.
+async function mergeIngredientsInDb(survivorId, dupIds, patch) {
+  const fail = (message) => ({ ok: false, message });
+  if (patch && Object.keys(patch).length > 0) {
+    const r = await supabase.from("ingredients").update(patch).eq("id", survivorId).select("id");
+    if (r.error) return fail(r.error.message);
+    if (!r.data || r.data.length === 0) return fail("la base no permitió cambiar el ingrediente que queda (revisá los permisos en Supabase).");
+  }
+  const { data: lines, error } = await supabase.from("recipe_ingredients").select("*").in("ingredient_id", [survivorId, ...dupIds]);
+  if (error) return fail(error.message);
+  const byRecipe = new Map();
+  (lines || []).forEach(l => {
+    if (!byRecipe.has(l.recipe_id)) byRecipe.set(l.recipe_id, []);
+    byRecipe.get(l.recipe_id).push(l);
   });
-  const confirmedFuzzyGroups = fuzzyPairs.filter(p => confirmedFuzzyKeys.has(p.key));
-  const pendingFuzzyPairs = fuzzyPairs.filter(p => !confirmedFuzzyKeys.has(p.key));
+  for (const recipeLines of byRecipe.values()) {
+    const keepLine = recipeLines.find(l => l.ingredient_id === survivorId) || recipeLines[0];
+    const others = recipeLines.filter(l => l.id !== keepLine.id);
+    if (keepLine.ingredient_id === survivorId && others.length === 0) continue;
+    const qty = recipeLines.reduce((s, l) => s + (+l.qty || 0), 0);
+    const up = await supabase.from("recipe_ingredients").update({ ingredient_id: survivorId, qty }).eq("id", keepLine.id).select("id");
+    if (up.error) return fail(up.error.message);
+    if (!up.data || up.data.length === 0) return fail("la base no permitió actualizar una receta (revisá los permisos en Supabase).");
+    if (others.length > 0) {
+      const del = await supabase.from("recipe_ingredients").delete().in("id", others.map(o => o.id)).select("id");
+      if (del.error) return fail(del.error.message);
+    }
+  }
+  const delIng = await supabase.from("ingredients").delete().in("id", dupIds).select("id");
+  if (delIng.error) return fail(delIng.error.message);
+  if (!delIng.data || delIng.data.length < dupIds.length) return fail("la base no permitió borrar el ingrediente repetido (revisá los permisos en Supabase).");
+  return { ok: true };
+}
 
-  const groups = useMemo(() => [...exactGroups, ...confirmedFuzzyGroups], [exactGroups, confirmedFuzzyGroups]);
+// Borra ingredientes de la base de forma segura: avisa si alguna receta los usa
+// (y pide confirmar), y verifica que la base realmente los borró antes de sacarlos
+// de la pantalla. Devuelve { ok, cancelled, message }.
+async function deleteIngredientsSafely(ids) {
+  const used = await supabase.from("recipe_ingredients").select("recipe_id").in("ingredient_id", ids);
+  if (used.error) return { ok: false, message: used.error.message };
+  const recipesUsing = new Set((used.data || []).map(l => l.recipe_id)).size;
+  if (recipesUsing > 0) {
+    const sure = window.confirm(`⚠️ ${ids.length === 1 ? "Este ingrediente se usa" : "Estos ingredientes se usan"} en ${recipesUsing} receta${recipesUsing !== 1 ? "s" : ""}. Si lo seguís, esas recetas quedan SIN ${ids.length === 1 ? "este ingrediente" : "estos ingredientes"} y su costo va a bajar.\n\n¿Borrar igual?`);
+    if (!sure) return { ok: false, cancelled: true };
+    const lines = await supabase.from("recipe_ingredients").delete().in("ingredient_id", ids);
+    if (lines.error) return { ok: false, message: lines.error.message };
+  }
+  const del = await supabase.from("ingredients").delete().in("id", ids).select("id");
+  if (del.error) return { ok: false, message: del.error.message };
+  if (!del.data || del.data.length < ids.length) return { ok: false, message: "la base de datos no permitió borrarlo (revisá los permisos de borrado en Supabase)." };
+  return { ok: true };
+}
 
-  const [keepMap, setKeepMap] = useState({});   // key de grupo -> id del ingrediente que queda
-  const [editMap, setEditMap] = useState({});   // key de grupo -> { name, unit, buy_price }
-  // Cada vez que aparece un grupo nuevo (exacto, o parecido recién confirmado)
-  // se le carga un valor por defecto sin pisar los grupos que ya estaban.
-  useEffect(() => {
-    setKeepMap(prev => {
-      const next = { ...prev };
-      let changed = false;
-      groups.forEach(g => {
-        if (!(g.key in next)) {
-          const withPrice = g.items.find(i => i.buy_price > 0);
-          next[g.key] = (withPrice || g.items[0]).id;
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-    setEditMap(prev => {
-      const next = { ...prev };
-      let changed = false;
-      groups.forEach(g => {
-        if (!(g.key in next)) {
-          const withPrice = g.items.find(i => i.buy_price > 0);
-          const keeper = withPrice || g.items[0];
-          next[g.key] = { name: keeper.name || "", unit: keeper.unit || "", buy_price: keeper.buy_price != null ? String(keeper.buy_price) : "" };
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [groups]);
+const MERGE_IGNORE_KEY = "recetapp_mm_no_es_igual";
 
-  const selectKeeper = (key, ing) => {
-    setKeepMap(p => ({ ...p, [key]: ing.id }));
-    setEditMap(p => ({ ...p, [key]: { name: ing.name || "", unit: ing.unit || "", buy_price: ing.buy_price != null ? String(ing.buy_price) : "" } }));
-  };
+function MergeDuplicatesModal({ ingredients, onClose, onMerged, setRecipes, profile }) {
+  const [items, setItems] = useState(ingredients);
+  const [ignored, setIgnored] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(MERGE_IGNORE_KEY) || "[]")); } catch { return new Set(); }
+  });
+  const [skipped, setSkipped] = useState(() => new Set());
   const [merging, setMerging] = useState(false);
-  const [done, setDone]       = useState(0);
+  const [fixing, setFixing] = useState(false);
+  const [mergedCount, setMergedCount] = useState(0);
+  const [survivorId, setSurvivorId] = useState(null);
+  const [edit, setEdit] = useState({ name: "", unit: "", buy_price: "" });
 
-  const mergeAll = async () => {
-    setMerging(true);
-    let updated = [...ingredients];
-    for (const g of groups) {
-      const keepId = keepMap[g.key];
-      const edit   = editMap[g.key] || {};
-      const patch  = {};
-      if (edit.name && edit.name.trim() !== "") patch.name = edit.name.trim();
-      if (edit.unit && edit.unit.trim() !== "") patch.unit = edit.unit.trim();
-      if (edit.buy_price !== "" && !isNaN(+edit.buy_price)) patch.buy_price = +edit.buy_price;
-      if (Object.keys(patch).length > 0) {
-        await supabase.from("ingredients").update(patch).eq("id", keepId);
-        updated = updated.map(i => i.id === keepId ? { ...i, ...patch } : i);
+  const broken = useMemo(() => items.filter(i => fixMojibake(i.name) !== i.name), [items]);
+
+  // Grupos con el mismo nombre (ya ignora mayúsculas, acentos y acentos rotos)
+  // y, después, pares con nombre parecido para confirmar a mano.
+  const pending = useMemo(() => {
+    const map = {};
+    items.forEach(i => {
+      const k = normalizeName(fixMojibake(i.name));
+      (map[k] = map[k] || []).push(i);
+    });
+    const exact = Object.entries(map).filter(([, g]) => g.length > 1)
+      .map(([, g]) => ({ key: "e:" + g.map(i => String(i.id)).sort().join(":"), kind: "exact", items: g }));
+    const inExact = new Set(exact.flatMap(g => g.items.map(i => i.id)));
+    const singles = items.filter(i => !inExact.has(i.id));
+    const fuzzy = [];
+    for (let a = 0; a < singles.length; a++) {
+      for (let b = a + 1; b < singles.length; b++) {
+        const A = singles[a], B = singles[b];
+        const na = normalizeName(fixMojibake(A.name)), nb = normalizeName(fixMojibake(B.name));
+        if (Math.abs(na.length - nb.length) > 3) continue; // evita cuentas de más
+        if (isFuzzyMatch(fixMojibake(A.name), fixMojibake(B.name))) {
+          fuzzy.push({ key: "f:" + [String(A.id), String(B.id)].sort().join(":"), kind: "fuzzy", items: [A, B] });
+        }
       }
-      const dropIds = g.items.filter(i => i.id !== keepId).map(i => i.id);
-      if (dropIds.length === 0) { setDone(d => d + 1); continue; }
-      for (const dropId of dropIds) {
-        await supabase.from("recipe_ingredients").update({ ingredient_id: keepId }).eq("ingredient_id", dropId);
-      }
-      await supabase.from("ingredients").delete().in("id", dropIds);
-      updated = updated.filter(i => !dropIds.includes(i.id));
-      setDone(d => d + 1);
     }
-    // Las recetas que usaban los duplicados ya quedaron bien reasignadas en la
-    // base de datos (arriba), pero la lista de recetas que la app tiene
-    // cargada en memoria todavía apunta a los ingredientes viejos que recién
-    // borramos. Sin este refresco, hasta que no se recargue la página, las
-    // recetas afectadas saldrían incompletas al verlas o al bajar el CSV.
-    if (setRecipes) {
-      const { data: freshRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
-      if (freshRecipes) setRecipes(sortByName(freshRecipes));
-    }
-    await logActivity(profile, "merge", "ingredientes", groups.length + " grupo(s) fusionados");
-    setMerging(false);
-    onMerged(updated);
-    onClose();
+    return [...exact, ...fuzzy].filter(g => !ignored.has(g.key) && !skipped.has(g.key));
+  }, [items, ignored, skipped]);
+
+  const current = pending[0] || null;
+
+  // Cada vez que cambia el grupo a revisar, deja elegido por defecto el que
+  // tiene precio (y nombre sano), con el nombre ya corregido.
+  useEffect(() => {
+    if (!current) return;
+    const score = (i) => (i.buy_price > 0 ? 2 : 0) + (fixMojibake(i.name) === i.name ? 1 : 0);
+    const keeper = [...current.items].sort((x, y) => score(y) - score(x))[0];
+    setSurvivorId(keeper.id);
+    setEdit({ name: fixMojibake(keeper.name), unit: keeper.unit || "", buy_price: keeper.buy_price != null ? String(keeper.buy_price) : "" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current && current.key]);
+
+  const chooseKeeper = (ing) => {
+    setSurvivorId(ing.id);
+    setEdit({ name: fixMojibake(ing.name), unit: ing.unit || "", buy_price: ing.buy_price != null ? String(ing.buy_price) : "" });
   };
+
+  const units = current ? Array.from(new Set(current.items.map(i => normalizeName(i.unit)))) : [];
+  const unitsDiffer = units.length > 1;
+
+  const markNotEqual = () => {
+    const next = new Set(ignored); next.add(current.key);
+    setIgnored(next);
+    try { localStorage.setItem(MERGE_IGNORE_KEY, JSON.stringify(Array.from(next))); } catch {}
+  };
+  const skipForNow = () => setSkipped(prev => { const n = new Set(prev); n.add(current.key); return n; });
+
+  const refreshRecipes = async () => {
+    if (!setRecipes) return;
+    const { data } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
+    if (data) setRecipes(sortByName(data));
+  };
+
+  const doMerge = async () => {
+    const keeper = current.items.find(i => i.id === survivorId);
+    const dups = current.items.filter(i => i.id !== survivorId);
+    if (!keeper || dups.length === 0) return;
+    const patch = {};
+    if (edit.name.trim()) patch.name = edit.name.trim();
+    if (edit.unit.trim()) patch.unit = edit.unit.trim();
+    if (edit.buy_price !== "" && !isNaN(+edit.buy_price)) patch.buy_price = +edit.buy_price;
+    setMerging(true);
+    const res = await mergeIngredientsInDb(keeper.id, dups.map(d => d.id), patch);
+    if (!res.ok) {
+      setMerging(false);
+      alert("No se pudo fusionar: " + res.message + "\nNo se perdió ningún ingrediente de las recetas.");
+      return;
+    }
+    const next = sortByName(items.filter(i => !dups.some(d => d.id === i.id)).map(i => i.id === keeper.id ? { ...i, ...patch } : i));
+    setItems(next);
+    onMerged(next);
+    setMergedCount(c => c + 1);
+    await refreshRecipes();
+    try { await logActivity(profile, "merge", "ingredientes", `Fusión: ${dups.length} duplicado(s) unidos en "${patch.name || keeper.name}"`); } catch {}
+    setMerging(false);
+  };
+
+  const fixAllNames = async () => {
+    if (!window.confirm(`Se van a corregir ${broken.length} nombre${broken.length !== 1 ? "s" : ""} con acentos rotos (por ejemplo "${broken[0].name}" → "${fixMojibake(broken[0].name)}"). ¿Seguimos?`)) return;
+    setFixing(true);
+    let next = [...items], failed = 0;
+    for (const ing of broken) {
+      const fixed = fixMojibake(ing.name);
+      const r = await supabase.from("ingredients").update({ name: fixed }).eq("id", ing.id).select("id");
+      if (r.error || !r.data || r.data.length === 0) { failed++; continue; }
+      next = next.map(i => i.id === ing.id ? { ...i, name: fixed } : i);
+    }
+    next = sortByName(next);
+    setItems(next); onMerged(next);
+    setFixing(false);
+    if (failed > 0) alert(`No se pudieron corregir ${failed} nombre(s).`);
+  };
+
+  const fmtPrice = (i) => i.buy_price != null && i.buy_price !== "" ? `$${Number(i.buy_price).toLocaleString("es-AR")}${i.buy_qty && +i.buy_qty !== 1 ? ` por ${i.buy_qty} ${i.unit || ""}` : ""}` : "sin precio";
 
   return (
     <Modal title="Fusionar ingredientes duplicados" onClose={onClose} wide>
-      {groups.length === 0 && pendingFuzzyPairs.length === 0 ? (
-        <div className="text-center py-8 text-gray-400">
-          <div className="text-4xl mb-2">✅</div>
-          <p>No se encontraron nombres duplicados ni parecidos.</p>
-        </div>
-      ) : (
-        <div className="space-y-5">
-          {groups.length > 0 && (
-            <>
-              <p className="text-sm text-gray-500">
-                Se encontraron {groups.length} grupo{groups.length !== 1 ? "s" : ""} de ingredientes con el mismo nombre (o que confirmaste como parecidos).
-                Elegí cuál mantener en cada uno — el resto se borra y las recetas que los usaban pasan a usar el que elegiste.
+      <div className="space-y-4">
+        {broken.length > 0 && (
+          <div className="flex items-center justify-between gap-3 flex-wrap bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+            <p className="text-sm text-amber-800">🔤 Hay <strong>{broken.length}</strong> nombre{broken.length !== 1 ? "s" : ""} con acentos rotos (ej: "{broken[0].name}").</p>
+            <Btn size="sm" onClick={fixAllNames} disabled={fixing}>{fixing ? "Corrigiendo..." : "Corregir todos"}</Btn>
+          </div>
+        )}
+
+        {!current ? (
+          <div className="text-center py-8 text-gray-500">
+            <div className="text-4xl mb-2">✅</div>
+            <p className="font-medium">{mergedCount > 0 ? `Listo: fusionaste ${mergedCount} grupo${mergedCount !== 1 ? "s" : ""}.` : "No se encontraron nombres duplicados ni parecidos."}</p>
+            {(skipped.size > 0) && <p className="text-xs text-gray-400 mt-1">Dejaste {skipped.size} para más tarde.</p>}
+            <div className="mt-4"><Btn onClick={onClose}>Cerrar</Btn></div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-sm text-gray-600">
+                {current.kind === "exact"
+                  ? "Estos ingredientes tienen el mismo nombre."
+                  : "Estos nombres no son idénticos pero se parecen mucho (un tipeo, plural o acento roto)."}
+                {" "}Elegí cuál queda: el otro se borra y las recetas que lo usaban pasan a usar el que elijas.
               </p>
-              <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
-                {groups.map((g) => {
-                  const edit = editMap[g.key] || { name: "", unit: "", buy_price: "" };
-                  return (
-                  <div key={g.key} className="border border-gray-100 rounded-xl p-4">
-                    <p className="font-semibold text-gray-700 mb-2">{g.items[0].name}</p>
-                    <div className="space-y-1.5">
-                      {g.items.map(ing => {
-                        const isKeeper = keepMap[g.key] === ing.id;
-                        return (
-                        <label key={ing.id}
-                          className={`flex items-start gap-2 text-sm rounded-lg p-2 -mx-2 cursor-pointer ${isKeeper ? "bg-misky-50" : ""}`}>
-                          <input type="radio" name={`grp-${g.key}`} checked={isKeeper}
-                            onChange={() => selectKeeper(g.key, ing)}
-                            className="accent-misky-500 mt-1" />
-                          {isKeeper ? (
-                            <div className="flex-1 space-y-1.5" onClick={e => e.stopPropagation()}>
-                              <p className="text-xs font-semibold text-misky-700">✓ Este queda — corregí lo que haga falta:</p>
-                              <div className="grid grid-cols-3 gap-1.5">
-                                <input value={edit.name} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], name: e.target.value } }))}
-                                  placeholder="Nombre"
-                                  className="col-span-3 border border-misky-200 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                                <input value={edit.unit} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], unit: e.target.value } }))}
-                                  placeholder="Unidad"
-                                  className="border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                                <input value={edit.buy_price} onChange={e => setEditMap(p => ({ ...p, [g.key]: { ...p[g.key], buy_price: e.target.value.replace(/[^0-9.]/g, "") } }))}
-                                  type="number" min="0" placeholder="Precio compra"
-                                  className="col-span-2 border border-misky-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-gray-700">
-                              {ing.category || "sin categoría"} · {ing.unit} · {ing.buy_price ? `$${ing.buy_price}` : "sin precio"} · merma {ing.waste_pct || 0}%
-                            </span>
-                          )}
-                        </label>
-                        );
-                      })}
+              <span className="text-xs bg-blue-50 text-blue-700 rounded-full px-3 py-1 whitespace-nowrap">Quedan {pending.length}</span>
+            </div>
+
+            {unitsDiffer && (
+              <p className="text-sm bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2">
+                ⚠️ Tienen <strong>unidades distintas</strong> ({current.items.map(i => i.unit || "?").join(" / ")}). Al fusionar se suman las cantidades de las recetas como si fueran la misma unidad. Si no son el mismo ingrediente, tocá "No es igual".
+              </p>
+            )}
+
+            <div className="space-y-2">
+              {current.items.map(ing => (
+                <label key={ing.id}
+                  className={`flex items-start gap-3 border rounded-xl p-3 cursor-pointer transition-colors ${survivorId === ing.id ? "border-blue-400 bg-blue-50" : "border-gray-300 hover:bg-gray-50"}`}>
+                  <input type="radio" name="mergeSurvivor" className="w-5 h-5 mt-1 flex-shrink-0"
+                    checked={survivorId === ing.id} onChange={() => chooseKeeper(ing)} />
+                  {survivorId === ing.id ? (
+                    <div className="flex-1 space-y-2" onClick={e => e.stopPropagation()}>
+                      <p className="text-xs font-semibold text-blue-600">✓ Este queda — corregí lo que haga falta:</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <input value={edit.name} onChange={e => setEdit(f => ({ ...f, name: e.target.value }))} placeholder="Nombre"
+                          className="col-span-3 border border-blue-200 rounded-lg px-2 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                        <input value={edit.unit} onChange={e => setEdit(f => ({ ...f, unit: e.target.value }))} placeholder="Unidad"
+                          className="border border-blue-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                        <input value={edit.buy_price} onChange={e => setEdit(f => ({ ...f, buy_price: e.target.value.replace(/[^0-9.]/g, "") }))}
+                          type="text" inputMode="decimal" placeholder="Precio compra"
+                          className="col-span-2 border border-blue-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                      </div>
+                      <p className="text-xs text-gray-400">{ing.category || "sin categoría"} · precio cargado: {fmtPrice(ing)}</p>
                     </div>
-                  </div>
-                  );
-                })}
-              </div>
-              <div className="flex gap-3 justify-end">
-                <Btn variant="secondary" onClick={onClose} disabled={merging}>Cancelar</Btn>
-                <Btn onClick={mergeAll} disabled={merging}>
-                  {merging ? `Fusionando... (${done}/${groups.length})` : `Fusionar ${groups.length} grupo${groups.length !== 1 ? "s" : ""}`}
-                </Btn>
-              </div>
-            </>
-          )}
-
-          {pendingFuzzyPairs.length > 0 && (
-            <div className="border-t border-gray-100 pt-4">
-              <p className="text-sm font-semibold text-amber-700 mb-1">🔍 Posibles duplicados por nombre parecido</p>
-              <p className="text-xs text-gray-500 mb-3">
-                Estos nombres no son idénticos, pero se parecen mucho — puede ser el mismo ingrediente mal escrito, o dos cosas distintas. Confirmá solo los que sepas que son el mismo.
-              </p>
-              <div className="space-y-2">
-                {pendingFuzzyPairs.map(p => (
-                  <div key={p.key} className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                    <span className="text-sm text-gray-700">
-                      <strong>{p.items[0].name}</strong> ¿es lo mismo que <strong>{p.items[1].name}</strong>?
-                    </span>
-                    <Btn variant="secondary" onClick={() => toggleFuzzyConfirm(p.key)}>Sí, es el mismo</Btn>
-                  </div>
-                ))}
-              </div>
+                  ) : (
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-800 break-words">{ing.name}</p>
+                      <p className="text-xs text-gray-400">{ing.category || "sin categoría"} · {ing.unit} · {fmtPrice(ing)}</p>
+                      <p className="text-xs text-rose-500 mt-0.5">Este se borra.</p>
+                    </div>
+                  )}
+                </label>
+              ))}
             </div>
-          )}
 
-          {groups.length === 0 && pendingFuzzyPairs.length > 0 && (
-            <div className="flex justify-end">
-              <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <Btn variant="secondary" onClick={skipForNow} disabled={merging}>Saltar</Btn>
+              <Btn variant="secondary" onClick={markNotEqual} disabled={merging}>No es igual</Btn>
+              <Btn onClick={doMerge} disabled={!survivorId || merging}>{merging ? "Fusionando..." : "🔗 Fusionar"}</Btn>
             </div>
-          )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </Modal>
   );
 }
@@ -2887,7 +2938,12 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
   const deleteBatch = async () => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
-    await supabase.from("ingredients").delete().in("id", ids);
+    const res = await deleteIngredientsSafely(ids);
+    if (!res.ok) { if (!res.cancelled) alert("No se pudo borrar: " + res.message); return; }
+    if (setRecipes) {
+      const { data: freshRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
+      if (freshRecipes) setRecipes(sortByName(freshRecipes));
+    }
     setIngredients(prev => prev.filter(i => !ids.includes(i.id)));
     await logActivity(profile, "delete", "ingredientes", ids.length + " ingredientes (borrado masivo)");
     clearSelection();
@@ -2923,7 +2979,12 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
 
   const del = async (id, name) => {
     
-    await supabase.from("ingredients").delete().eq("id", id);
+    const res = await deleteIngredientsSafely([id]);
+    if (!res.ok) { if (!res.cancelled) alert("No se pudo borrar: " + res.message); return; }
+    if (setRecipes) {
+      const { data: freshRecipes } = await supabase.from("recipes").select("*, recipe_ingredients(*)").order("name");
+      if (freshRecipes) setRecipes(sortByName(freshRecipes));
+    }
     setIngredients(prev => prev.filter(i => i.id !== id));
     await logActivity(profile, "delete", "ingrediente", name);
   };
@@ -4531,7 +4592,7 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
     // Un ingrediente en $0 a propósito (ej. Agua) no es un precio que falte
     // cargar — antes se marcaba igual que uno recién creado sin precio, y
     // aparecía en el cartel de "falta precio" sin necesidad.
-    const missing = [...new Set(c.lines.filter(l => l.ing.buy_price == null).map(l => l.ing.name))];
+    const missing = [...new Set(c.lines.filter(l => l.ing.buy_price == null && !/^agua(\s|$)/i.test((l.ing.name || "").trim())).map(l => l.ing.name))];
     return { r, c, missing };
   }), [recipes, ingredients, business]);
 
