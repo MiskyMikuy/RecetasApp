@@ -54,21 +54,96 @@ function isFuzzyMatch(nameA, nameB) {
 // Para armar un men\u00fa/presupuesto de varias recetas sin buscarlas una por una:
 // se pega una lista (por ej. copiada de un men\u00fa en Word, numerada o no) y se
 // matchea cada l\u00ednea contra las recetas existentes.
-const PASTED_LIST_MARKER = /^(\d+[.)-]|[-\u2022*\u25aa\u2023])\s*/;
+// Además de "1. Ñoquis" (número de lista, no cantidad), cada línea puede traer
+// cuántas tandas hacer: "2 x Ñoquis", "x2 Ñoquis", "Ñoquis x 2", "Ñoquis (2)",
+// "Ñoquis: 2", "2 porciones de Ñoquis", "2 Ñoquis", o copiado de Excel en dos
+// columnas. Si la cantidad no se entiende queda en 1 y se avisa en pantalla.
+const PASTED_LIST_MARKER = /^(\d+[.)-](?!\d)|[-•*▪‣])\s*/;
+const PASTED_Q = String.raw`(\d+\/\d+|\d+(?:[.,]\d+)?)`;
+const PASTED_UNIT = String.raw`(?:u|un|uds?|unids?|unidad(?:es)?|porc|porci[oó]n(?:es)?|viandas?|platos?)\.?`;
+const PASTED_QTY_BEFORE = [
+  new RegExp(String.raw`^${PASTED_Q}\s*(?:[x×*]\s+|×|\*)(.+)$`, "i"),
+  new RegExp(String.raw`^[x×*]\s*${PASTED_Q}\s+(.+)$`, "i"),
+  new RegExp(String.raw`^\(\s*${PASTED_Q}\s*\)\s*(.+)$`, "i"),
+  new RegExp(String.raw`^${PASTED_Q}\s+${PASTED_UNIT}\s+(?:de\s+)?(.+)$`, "i"),
+];
+const PASTED_QTY_AFTER = [
+  new RegExp(String.raw`^(.+?)\s+[x×*]\s*${PASTED_Q}(?:\s*${PASTED_UNIT})?$`, "i"),
+  new RegExp(String.raw`^(.+?)\s*\(\s*(?:[x×*]\s*)?${PASTED_Q}(?:\s*${PASTED_UNIT})?\s*\)$`, "i"),
+  new RegExp(String.raw`^(.+?)\s*[:\-–—]\s*${PASTED_Q}(?:\s*${PASTED_UNIT})?$`, "i"),
+  new RegExp(String.raw`^(.+?)\s+${PASTED_Q}\s*${PASTED_UNIT}$`, "i"),
+];
+const PASTED_QTY_BARE_BEFORE = new RegExp(String.raw`^${PASTED_Q}\s+(?:de\s+)?([^\d\s].*)$`, "i");
+const PASTED_QTY_BARE_AFTER  = new RegExp(String.raw`^(.+?)\s+${PASTED_Q}$`, "i");
+const PASTED_NUMERIC_CELL = new RegExp(String.raw`^${PASTED_Q}(?:\s*${PASTED_UNIT})?$`, "i");
+function readPastedQty(txt) {
+  const qty = Number(txt);
+  // Las tandas son enteras: "1,5", "1/2" o "0" no se pueden aplicar tal cual.
+  if (Number.isInteger(qty) && qty >= 1) return { qty, qtyIssue: null };
+  return { qty: 1, qtyIssue: txt };
+}
+function parsePastedQuantity(text) {
+  if (text.includes("\t")) {
+    const cells = text.split("\t").map(c => c.trim()).filter(c => c && !c.startsWith("$"));
+    const numbers = cells.filter(c => PASTED_NUMERIC_CELL.test(c));
+    const texts = cells.filter(c => !PASTED_NUMERIC_CELL.test(c));
+    if (texts.length > 0 && numbers.length > 0) {
+      const found = readPastedQty(numbers[0].match(PASTED_NUMERIC_CELL)[1]);
+      return { name: texts.join(" "), ...found, hasQty: true, bare: false,
+               qtyIssue: found.qtyIssue || (numbers.length > 1 ? numbers.join(" / ") : null) };
+    }
+    text = cells.join(" ");
+  }
+  for (const re of PASTED_QTY_BEFORE) {
+    const m = text.match(re);
+    if (m) return { name: m[2].trim(), ...readPastedQty(m[1]), hasQty: true, bare: false };
+  }
+  for (const re of PASTED_QTY_AFTER) {
+    const m = text.match(re);
+    if (m) return { name: m[1].trim(), ...readPastedQty(m[2]), hasQty: true, bare: false };
+  }
+  const before = text.match(PASTED_QTY_BARE_BEFORE);
+  if (before) return { name: before[2].trim(), ...readPastedQty(before[1]), hasQty: true, bare: true };
+  const after = text.match(PASTED_QTY_BARE_AFTER);
+  if (after) return { name: after[1].trim(), ...readPastedQty(after[2]), hasQty: true, bare: true };
+  return { name: text, qty: 1, qtyIssue: null, hasQty: false, bare: false };
+}
 function parsePastedRecipeList(text) {
-  const rawLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  // Si son mayor\u00eda, asume que las l\u00edneas SIN marca (n\u00famero o vi\u00f1eta) son
-  // t\u00edtulos de secci\u00f3n ("Pastas", "Carnes") o saludos ("Hola Gonzalo!") y las
-  // descarta; si no, toma todas las l\u00edneas tal cual (por si vino sin numerar).
-  const marked = rawLines.filter(l => PASTED_LIST_MARKER.test(l));
-  const source = marked.length >= rawLines.length / 2 ? marked : rawLines;
-  return source
-    .map(l => l
+  const items = text.split(/\r?\n/).map(l => l.replace(/\s+$/, "").replace(/^ +/, "")).filter(l => l.trim()).map(line => {
+    const raw = line.trim();
+    const marker = raw.match(/^(\d+)[.)-](?!\d)/);
+    const clean = raw
       .replace(PASTED_LIST_MARKER, "")
-      // saca un precio al final de la l\u00ednea, tipo ": $12.500", "- $3500", "$1.200"
-      .replace(/[:\-\u2013\u2014]?\s*\$\s?[\d][\d.,]*\s*$/, "")
-      .trim())
-    .filter(Boolean);
+      // saca un precio al final de la línea, tipo ": $12.500", "- $3500", "$1.200"
+      .replace(/[:\-–—]?\s*\$\s?[\d][\d.,]*\s*$/, "")
+      .trim();
+    return { clean, listNumber: marker ? Number(marker[1]) : null, hasMarker: PASTED_LIST_MARKER.test(raw), ...parsePastedQuantity(clean) };
+  }).filter(it => it.clean);
+
+  // "1 Ñoquis / 2 Canelones / 3 Pollo": un número sin signo que sube de a uno
+  // es una lista numerada, no una cantidad.
+  const bare = items.filter(it => it.bare);
+  const firstNumber = it => Number(it.clean.match(/^\d+/)?.[0]);
+  if (bare.length >= 3 && bare.length === items.length &&
+      bare.every((it, i) => firstNumber(it) === firstNumber(bare[0]) + i)) {
+    bare.forEach(it => {
+      it.name = it.clean.replace(/^\d+\s+(?:de\s+)?/, "");
+      it.qty = 1; it.qtyIssue = null; it.hasQty = false; it.bare = false;
+    });
+  }
+
+  // Si son mayoría las líneas con número, viñeta o cantidad, las que no tienen
+  // nada pueden ser títulos ("Pastas") o saludos ("Hola Gonzalo!"): solo se
+  // toman si coinciden exacto con una receta (eso se resuelve al buscarlas).
+  const marked = items.filter(it => it.hasMarker || (it.hasQty && !it.bare));
+  const allowTitles = marked.length >= items.length / 2;
+  items.forEach(it => { it.maybeTitle = allowTitles && !it.hasMarker && !(it.hasQty && !it.bare); });
+
+  // Números con punto repetidos o desordenados ("2. Pollo / 2. Carne / 1. Tarta")
+  // parecen cantidades: siguen siendo numeración, pero se avisa.
+  const numbers = items.filter(it => it.listNumber !== null).map(it => it.listNumber);
+  items.dottedQtyWarning = numbers.some((n, i) => i > 0 && n <= numbers[i - 1]);
+  return items;
 }
 // Normaliza para comparar, tratando puntuación (paréntesis, comas) como
 // espacio — "Carbonada criolla (con batata)" y "Carbonada criolla, con
@@ -84,24 +159,32 @@ function wordOverlapScore(a, b) {
   wa.forEach(w => { if (wb.has(w)) common++; });
   return common / Math.max(wa.size, wb.size);
 }
-function matchPastedRecipeNames(names, recipes) {
-  return names.map(name => {
-    const norm = normalizeForMatch(name);
-    let match = recipes.find(r => normalizeForMatch(r.name) === norm);
+function matchPastedRecipeNames(items, recipes) {
+  const exact = (text) => {
+    const norm = normalizeForMatch(text);
+    return recipes.find(r => normalizeForMatch(r.name) === norm);
+  };
+  return items.map(item => {
+    // Primero la línea entera: una receta puede tener un número en el nombre
+    // ("Pizza 4 quesos", "Menú 2") y ese número no es una cantidad.
+    const whole = exact(item.clean);
+    if (whole) return { ...item, name: item.clean, qty: 1, qtyIssue: null, match: whole, approximate: false };
+    let match = exact(item.name);
+    let approximate = false;
     // (Ojo: acá NO hay un "includes" de nombres como respaldo — nombres cortos
     // tipo "Pizza" quedaban adentro de cualquier receta que mencionara esa
     // palabra de pasada, matcheando cosas que no correspondían. El respaldo
     // por palabras en común de abajo es más seguro.)
-    if (!match) {
+    if (!match && !item.maybeTitle) {
       let best = null, bestScore = 0;
       recipes.forEach(r => {
-        const score = wordOverlapScore(name, r.name);
+        const score = wordOverlapScore(item.name, r.name);
         if (score > bestScore) { bestScore = score; best = r; }
       });
-      if (best && bestScore >= 0.6) match = best;
+      if (best && bestScore >= 0.6) { match = best; approximate = true; }
     }
-    return { name, match };
-  });
+    return { ...item, match, approximate };
+  }).filter(x => x.match || !x.maybeTitle);
 }
 // ─── PEGAR INGREDIENTES (formulario de receta) ─────────────────────────────
 // Para cargar una receta rápido a partir de una lista ya armada en otro
@@ -4546,17 +4629,29 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   // Pegar una lista de nombres (ej. de un menú armado en Word) y seleccionar
   // de una todas las recetas que matcheen, en vez de buscar una por una.
   const [pasteText, setPasteText]     = useState("");
-  const [pasteResult, setPasteResult] = useState(null); // { matchedCount, total, unmatched }
+  const [pasteResult, setPasteResult] = useState(null); // { matchedCount, total, unmatched, ... }
   const applyPastedList = () => {
-    const names = parsePastedRecipeList(pasteText);
-    const results = matchPastedRecipeNames(names, recipes);
+    const items = parsePastedRecipeList(pasteText);
+    const results = matchPastedRecipeNames(items, recipes);
     const matched = results.filter(x => x.match);
     const unmatched = results.filter(x => !x.match).map(x => x.name);
-    const next = {};
-    matched.forEach(({ match }) => { next[match.id] = true; });
+    const next = {}, batches = {};
+    matched.forEach(({ match, qty }) => {
+      next[match.id] = true;
+      // La misma receta en dos líneas se suma.
+      batches[match.id] = (batches[match.id] || 0) + qty;
+    });
     setCartSel(next);
-    setCartBatch({});
-    setPasteResult({ matchedCount: matched.length, total: names.length, unmatched });
+    setCartBatch(batches);
+    setPasteResult({
+      matchedCount: matched.length, total: results.length, unmatched,
+      approximate: matched.filter(x => x.approximate).map(x => ({ pasted: x.name, recipe: x.match.name })),
+      qtyIssues: matched.filter(x => x.qtyIssue).map(x => ({ pasted: x.name, value: x.qtyIssue })),
+      multiPortion: Object.keys(batches).map(id => recipes.find(r => String(r.id) === id))
+        .filter(r => r && r.portions > 1 && batches[r.id] > 1)
+        .map(r => ({ name: r.name, batches: batches[r.id], portions: r.portions * batches[r.id] })),
+      dottedQtyWarning: items.dottedQtyWarning,
+    });
   };
   // Editar la categoría directo en esta tabla, con un click en la celda —
   // igual que en Ingredientes — sin tener que tildar la receta y usar
@@ -4957,12 +5052,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
           {!pasteResult ? (
             <div className="space-y-3">
               <p className="text-sm text-gray-600">
-                Pegá una lista de nombres de recetas — copiada de un menú, un presupuesto, lo que sea —
-                una por línea, con número adelante ("1. Ñoquis...") o sin él. Selecciona de una todas las
-                que encuentre, sin tener que buscarlas una por una.
+                Pegá una lista de recetas — copiada de un menú, un presupuesto, una planilla — una por
+                línea. Para indicar cuántas tandas hacer: "2 x Ñoquis", "Ñoquis x 2", "Ñoquis (2)" o dos
+                columnas de Excel. Ojo: "2. Ñoquis" (con punto) se toma como número de lista, no como cantidad.
               </p>
               <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={12}
-                placeholder={"1. Ñoquis de papa con salsa de tomate casera y albahaca\n2. Canelones de verdura y ricota con salsa blanca\n..."}
+                placeholder={"2 x Ñoquis de papa con salsa de tomate casera y albahaca\n1 x Canelones de verdura y ricota con salsa blanca\n..."}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
               <div className="flex justify-end gap-3 pt-1">
                 <Btn variant="secondary" onClick={() => { setModal(null); setPasteText(""); }}>Cancelar</Btn>
@@ -4973,8 +5068,44 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <div className="space-y-3">
               <p className="text-sm text-gray-700">
                 Encontradas <strong className="text-misky-700">{pasteResult.matchedCount}</strong> de <strong>{pasteResult.total}</strong> —
-                quedaron tildadas en la tabla de abajo.
+                quedaron tildadas, con sus tandas, en la tabla de abajo.
               </p>
+              {pasteResult.approximate.length > 0 && (
+                <div className="bg-amber-50 border border-amber-100 rounded-lg p-3">
+                  <p className="text-sm font-medium text-amber-800 mb-1">
+                    Nombre no exacto, revisá que sea la receta correcta:
+                  </p>
+                  <ul className="text-sm text-amber-700 space-y-1">
+                    {pasteResult.approximate.map((x, i) => <li key={i}>"{x.pasted}" → <strong>{x.recipe}</strong></li>)}
+                  </ul>
+                </div>
+              )}
+              {pasteResult.qtyIssues.length > 0 && (
+                <div className="bg-amber-50 border border-amber-100 rounded-lg p-3">
+                  <p className="text-sm font-medium text-amber-800 mb-1">
+                    Cantidad que no se pudo tomar (revisala a mano):
+                  </p>
+                  <ul className="text-sm text-amber-700 list-disc list-inside space-y-0.5">
+                    {pasteResult.qtyIssues.map((x, i) => <li key={i}>{x.pasted}: "{x.value}"</li>)}
+                  </ul>
+                </div>
+              )}
+              {pasteResult.multiPortion.length > 0 && (
+                <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+                  <p className="text-sm font-medium text-blue-800 mb-1">
+                    La cantidad se toma como tandas, no porciones:
+                  </p>
+                  <ul className="text-sm text-blue-700 list-disc list-inside space-y-0.5">
+                    {pasteResult.multiPortion.map((x, i) => <li key={i}>{x.name}: {x.batches} tandas = {x.portions} porciones</li>)}
+                  </ul>
+                </div>
+              )}
+              {pasteResult.dottedQtyWarning && (
+                <p className="text-sm text-amber-700">
+                  Los números con punto ("2. Pollo") se tomaron como número de lista, no como cantidad.
+                  Si eran cantidades, escribilas como "2 x Pollo".
+                </p>
+              )}
               {pasteResult.unmatched.length > 0 && (
                 <div className="bg-amber-50 border border-amber-100 rounded-lg p-3">
                   <p className="text-sm font-medium text-amber-800 mb-1">
