@@ -580,7 +580,7 @@ function openGeneratedHTML(content) {
 // Genera un recetario en HTML con diseño institucional (logo y colores de
 // Misky Mikuy) para las recetas seleccionadas — se puede abrir en el
 // navegador, imprimir o guardar como PDF desde ahí.
-function downloadRecipesText(selectedRecipes, ingredients, business) {
+function downloadRecipesText(selectedRecipes, ingredients, business, mode = "view") {
   const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
   const recipeCards = selectedRecipes.map(r => {
     const batches = r._batches || 1;
@@ -626,29 +626,29 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   :root { --brand: #612577; --brand-dark: #351740; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1f2937; margin: 0; padding: 0 0 24px; background: #f3f4f6; }
-  .page-header { background: linear-gradient(135deg, var(--brand-dark), var(--brand)); padding: 18px 16px; display: flex; align-items: center; gap: 16px; }
-  .page-header img { height: 44px; }
-  .page-header h1 { color: white; font-size: 21px; margin: 0; }
-  .page-header p { color: #e7d6ee; font-size: 14px; margin: 2px 0 0; }
+  .page-header { background: linear-gradient(135deg, var(--brand-dark), var(--brand)); padding: 10px 16px; display: flex; align-items: baseline; gap: 10px; }
+  .page-header img { height: 28px; align-self: center; }
+  .page-header h1 { color: white; font-size: 16px; margin: 0; display: inline; }
+  .page-header p { color: #e7d6ee; font-size: 13px; margin: 0; display: inline; }
   /* Hoja apaisada: 2 recetas lado a lado por página, para gastar menos papel.
      flex-wrap: wrap como respaldo — si el celular/impresora termina usando
      una hoja más angosta de lo esperado (algunos celulares Android ignoran
      el pedido de hoja apaisada), las recetas pasan a apilarse en vez de
      quedar cortadas o amontonadas. */
   .print-page { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; max-width: 1050px; margin: 16px auto 0; }
-  .recipe { background: white; flex: 1 1 320px; min-width: 280px; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); page-break-inside: avoid; }
-  .recipe-header { background: var(--brand); color: white; padding: 14px 16px; }
-  .recipe-header h2 { margin: 0; font-size: 20px; }
-  .recipe-header p { margin: 4px 0 0; font-size: 13px; color: #ecdcf2; }
-  .recipe-body { padding: 14px 14px; }
-  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 8px; }
+  .recipe { background: white; flex: 1 1 320px; min-width: 280px; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .recipe-header { background: var(--brand); color: white; padding: 10px 14px; }
+  .recipe-header h2 { margin: 0; font-size: 16px; }
+  .recipe-header p { margin: 2px 0 0; font-size: 12px; color: #ecdcf2; }
+  .recipe-body { padding: 10px 12px; }
+  .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); font-weight: 700; margin: 0 0 6px; }
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
-  th { text-align: left; color: #6b7280; font-size: 11px; text-transform: uppercase; padding: 6px 5px; border-bottom: 2px solid #e5e7eb; }
-  td { padding: 7px 6px; border-bottom: 1px solid #f3f4f6; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 13px; }
+  th { text-align: left; color: #6b7280; font-size: 10px; text-transform: uppercase; padding: 4px 5px; border-bottom: 2px solid #e5e7eb; }
+  td { padding: 5px 6px; border-bottom: 1px solid #f3f4f6; }
   td.qty-cell { font-weight: 700; color: var(--brand-dark); }
   tr:last-child td { border-bottom: none; }
-  .procedure { font-size: 14px; line-height: 1.55; color: #374151; }
+  .procedure { font-size: 13px; line-height: 1.45; color: #374151; }
   .footer { text-align: center; font-size: 12px; color: #9ca3af; padding: 20px 14px; }
   .print-btn { position: fixed; top: 20px; right: 24px; background: white; color: var(--brand); border: none; border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .print-btn:hover { background: #f9f4fb; }
@@ -665,9 +665,18 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   @media print {
     @page { size: A4 landscape; margin: 10mm; }
     body { background: white; }
-    .print-page { max-width: none; page-break-after: always; margin-top: 0; flex-direction: row; }
-    .print-page:last-child { page-break-after: avoid; }
+    /* El salto de hoja va ANTES de cada par de recetas (menos el primero),
+       nunca después — así nunca queda una hoja extra en blanco al final.
+       Ya no se evita que una receta se corte entre hojas (antes
+       page-break-inside: avoid la empujaba entera a la hoja siguiente, lo
+       que podía dejar la hoja anterior casi vacía); lo que sí se protege
+       son el título y los subtítulos de cada receta (no quedan solos al
+       pie de una hoja) y las filas de la tabla (no se parten a la mitad). */
+    .print-page { max-width: none; page-break-before: always; margin-top: 0; flex-direction: row; }
+    .print-page:first-child { page-break-before: avoid; }
     .recipe { box-shadow: none; border: 1px solid #e5e7eb; }
+    .recipe-header h2, .section-title { page-break-after: avoid; break-after: avoid; }
+    tr { page-break-inside: avoid; break-inside: avoid; }
     /* El encabezado con el logo y el pie de página son solo para la vista en
        pantalla (antes de imprimir) — al imprimir se sacan del todo, porque si
        no ocupan lugar de sobra y empujan una hoja extra en blanco (al
@@ -696,13 +705,17 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
+  // "string" lo usa el generador de PDF real (ver generatePdf más abajo) para
+  // dibujar este mismo HTML fuera de pantalla y sacarle una foto por hoja —
+  // así el PDF sale siempre idéntico a esta vista, sin duplicar el armado.
+  if (mode === "string") return html;
   openGeneratedHTML(html);
 }
 
 // Genera una lista de compras imprimible en HTML, sumando los ingredientes de
 // todas las recetas seleccionadas (usa la cantidad tal cual está cargada en
 // cada receta, sin pedir porciones extra) y agrupada por rubro.
-function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
+function downloadShoppingListHTML(selectedRecipes, ingredients, business, mode = "view") {
   const selections = selectedRecipes.map(r => ({ recipeId: r.id, portionsMade: r.portions * (r._batches || 1) }));
   const report = calcProductionReport(selections, selectedRecipes, ingredients, business);
   const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
@@ -900,6 +913,7 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
+  if (mode === "string") return html;
   openGeneratedHTML(html);
 }
 
@@ -1101,13 +1115,186 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business, mode = "vi
 </body>
 </html>`;
 
-  // "mode" = "file" descarga el archivo .html directo al celular (para
-  // guardarlo o compartirlo con cocina); por defecto se muestra en pantalla
-  // para ir tildando con el checklist mientras se prepara.
-  if (mode === "file") {
-    downloadTextFile(html, `mise-en-place-${new Date().toISOString().slice(0, 10)}.html`);
-  } else {
-    openGeneratedHTML(html);
+  // "string" lo usa el generador de PDF real; por defecto se muestra en
+  // pantalla para ir tildando con el checklist mientras se prepara.
+  if (mode === "string") return html;
+  openGeneratedHTML(html);
+}
+
+// ─── PDF REAL (sin pasar por el cuadro de impresión del celular) ──────────
+// Guardar como PDF desde el cuadro de impresión del celular a veces daba un
+// archivo de 0 KB, y el botón de descargar de Mise en place no andaba. Para
+// evitarlo del todo, estas funciones arman el recetario / lista de compras /
+// mise en place EXACTAMENTE como se ven en pantalla (reutilizan el mismo
+// HTML de las funciones de arriba, pidiéndoles mode="string"), lo dibujan
+// fuera de la pantalla y le sacan una foto a cada hoja con html2canvas,
+// armando un PDF real con jsPDF — sin pasar por el cuadro de impresión.
+// Ambas librerías se cargan desde cdnjs la primera vez que hacen falta, así
+// que este paso necesita internet.
+let pdfGenerating = false; // evita que un segundo toque arranque otro PDF mientras se está armando uno
+const PDF_SIGLA = "MM"; // Misky Mikuy — en cada app clonada va la sigla de esa app
+
+function loadPdfLibs() {
+  const load = (src, alreadyLoaded) => new Promise((resolve, reject) => {
+    if (alreadyLoaded()) return resolve();
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("No se pudieron cargar las herramientas de PDF (revisá la conexión a internet)"));
+    document.head.appendChild(s);
+  });
+  return Promise.all([
+    load("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", () => !!window.html2canvas),
+    load("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", () => !!(window.jspdf && window.jspdf.jsPDF)),
+  ]);
+}
+
+function showPdfToast(text) {
+  let el = document.getElementById("recetapp-pdf-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "recetapp-pdf-toast";
+    el.style.cssText = "position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#351740; color:#fff; padding:10px 18px; border-radius:999px; font:600 13px -apple-system,BlinkMacSystemFont,sans-serif; z-index:99999; box-shadow:0 4px 16px rgba(0,0,0,0.25); white-space:nowrap;";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+}
+function hidePdfToast() {
+  const el = document.getElementById("recetapp-pdf-toast");
+  if (el) el.remove();
+}
+
+// Prepara, fuera de la pantalla, el mismo HTML completo que arma cada
+// downloadXxx(..., "string") — así el PDF sale siempre igual a lo que se ve
+// al imprimir, sin repetir el armado de cada hoja en otro lado.
+function renderOffscreen(fullHtmlDoc) {
+  const bodyMatch  = fullHtmlDoc.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  const styleMatch = fullHtmlDoc.match(/<style>([\s\S]*?)<\/style>/i);
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed; left:-9999px; top:0; background:#fff; width:1200px;";
+  document.body.appendChild(container);
+  if (styleMatch) {
+    const styleEl = document.createElement("style");
+    styleEl.textContent = styleMatch[1] + `
+      .print-btn, .back-btn, .orientation-hint, .page-header, .footer { display: none !important; }
+    `;
+    container.appendChild(styleEl);
+  }
+  const bodyWrap = document.createElement("div");
+  bodyWrap.innerHTML = bodyMatch ? bodyMatch[1] : fullHtmlDoc;
+  container.appendChild(bodyWrap);
+  return container;
+}
+
+// Agrega UNA imagen ya renderizada (un canvas) como una hoja completa del
+// PDF, encogiéndola lo necesario (hasta un ~60%) para que entre entera —
+// usado para el recetario, 2 recetas por hoja.
+function addCanvasAsFittedPage(doc, canvas, { marginMm = 8, minScale = 0.6 } = {}) {
+  const usableWmm = doc.internal.pageSize.getWidth() - marginMm * 2;
+  const usableHmm = doc.internal.pageSize.getHeight() - marginMm * 2;
+  const pxToMmAt1x = usableWmm / canvas.width;
+  let imgWmm = canvas.width * pxToMmAt1x;
+  let imgHmm = canvas.height * pxToMmAt1x;
+  const fitScale = Math.max(minScale, Math.min(1, usableHmm / imgHmm));
+  imgWmm *= fitScale; imgHmm *= fitScale;
+  const x = marginMm + (usableWmm - imgWmm) / 2;
+  const y = marginMm + (usableHmm - imgHmm) / 2;
+  doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", x, y, imgWmm, imgHmm);
+}
+
+// Agrega un canvas que puede ser más alto que una hoja, partido en tantas
+// hojas como haga falta — usado para lista de compras y mise en place.
+function addTallCanvasAsPages(doc, canvas, { marginMm = 8 } = {}) {
+  const usableWmm = doc.internal.pageSize.getWidth() - marginMm * 2;
+  const usableHmm = doc.internal.pageSize.getHeight() - marginMm * 2;
+  const pxToMm = usableWmm / canvas.width;
+  const pageHpx = Math.max(1, Math.floor(usableHmm / pxToMm));
+  const totalPages = Math.max(1, Math.ceil(canvas.height / pageHpx));
+  let renderedPx = 0;
+  for (let i = 0; i < totalPages; i++) {
+    const sliceHpx = Math.min(pageHpx, canvas.height - renderedPx);
+    const sliceCanvas = document.createElement("canvas");
+    sliceCanvas.width = canvas.width;
+    sliceCanvas.height = sliceHpx;
+    sliceCanvas.getContext("2d").drawImage(canvas, 0, renderedPx, canvas.width, sliceHpx, 0, 0, canvas.width, sliceHpx);
+    if (i > 0) doc.addPage();
+    doc.addImage(sliceCanvas.toDataURL("image/jpeg", 0.92), "JPEG", marginMm, marginMm, usableWmm, sliceHpx * pxToMm);
+    renderedPx += sliceHpx;
+  }
+  return totalPages;
+}
+
+async function generateRecetarioPDF(selectedRecipes, ingredients, business) {
+  if (pdfGenerating) return;
+  pdfGenerating = true;
+  showPdfToast("Preparando PDF…");
+  let container;
+  try {
+    await loadPdfLibs();
+    const html = downloadRecipesText(selectedRecipes, ingredients, business, "string");
+    container = renderOffscreen(html);
+    const pages = Array.from(container.querySelectorAll(".print-page"));
+    const doc = new window.jspdf.jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+    for (let i = 0; i < pages.length; i++) {
+      showPdfToast(`Preparando PDF… hoja ${i + 1} de ${pages.length}`);
+      const canvas = await window.html2canvas(pages[i], { scale: 2, backgroundColor: "#ffffff" });
+      if (i > 0) doc.addPage();
+      addCanvasAsFittedPage(doc, canvas);
+    }
+    doc.save(`RecetApp_${PDF_SIGLA}_Recetario.pdf`);
+  } catch (e) {
+    alert("No se pudo armar el PDF: " + e.message);
+  } finally {
+    if (container) container.remove();
+    hidePdfToast();
+    pdfGenerating = false;
+  }
+}
+
+async function generateShoppingListPDF(selectedRecipes, ingredients, business) {
+  if (pdfGenerating) return;
+  pdfGenerating = true;
+  showPdfToast("Preparando PDF…");
+  let container;
+  try {
+    await loadPdfLibs();
+    const html = downloadShoppingListHTML(selectedRecipes, ingredients, business, "string");
+    container = renderOffscreen(html);
+    const target = container.querySelector(".wrap") || container;
+    const doc = new window.jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const canvas = await window.html2canvas(target, { scale: 2, backgroundColor: "#ffffff" });
+    const totalPages = addTallCanvasAsPages(doc, canvas);
+    showPdfToast(`Preparando PDF… hoja ${totalPages} de ${totalPages}`);
+    doc.save(`RecetApp_${PDF_SIGLA}_Lista_de_compras.pdf`);
+  } catch (e) {
+    alert("No se pudo armar el PDF: " + e.message);
+  } finally {
+    if (container) container.remove();
+    hidePdfToast();
+    pdfGenerating = false;
+  }
+}
+
+async function generateMisePrepPDF(selectedRecipes, ingredients, business) {
+  if (pdfGenerating) return;
+  pdfGenerating = true;
+  showPdfToast("Preparando PDF…");
+  let container;
+  try {
+    await loadPdfLibs();
+    const html = downloadMisePrepHTML(selectedRecipes, ingredients, business, "string");
+    container = renderOffscreen(html);
+    const doc = new window.jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const canvas = await window.html2canvas(container, { scale: 2, backgroundColor: "#ffffff" });
+    const totalPages = addTallCanvasAsPages(doc, canvas);
+    showPdfToast(`Preparando PDF… hoja ${totalPages} de ${totalPages}`);
+    doc.save(`RecetApp_${PDF_SIGLA}_Mise_en_place.pdf`);
+  } catch (e) {
+    alert("No se pudo armar el PDF: " + e.message);
+  } finally {
+    if (container) container.remove();
+    hidePdfToast();
+    pdfGenerating = false;
   }
 }
 
@@ -1289,6 +1476,29 @@ function Btn({ children, onClick, variant = "primary", size = "md", disabled = f
       className={`font-medium rounded-lg transition-colors ${v[variant]} ${s[size]} ${disabled ? "opacity-50 cursor-not-allowed" : ""} ${className}`}>
       {children}
     </button>
+  );
+}
+
+// Selector de cantidad pensado para el dedo en el celular (botones − y +
+// grandes, número bien ancho, teclado numérico y selección completa del
+// número al tocarlo en vez de tener que borrarlo a mano). Se usa en Pedido,
+// en la selección de Recetas y en Mise en place (tandas) — en los tres la
+// cantidad nunca baja de 1; para sacar un ítem del todo se usa el tilde o la
+// "×" de esa fila, no el botón "−".
+function QtyStepper({ value, onChange, min = 1 }) {
+  const dec = () => onChange(Math.max(min, (value || min) - 1));
+  const inc = () => onChange((value || min) + 1);
+  return (
+    <div className="flex items-center gap-1.5 flex-shrink-0">
+      <button type="button" onClick={dec}
+        className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-600 font-bold text-lg flex items-center justify-center flex-shrink-0">−</button>
+      <input type="number" inputMode="numeric" pattern="[0-9]*" min={min} value={value}
+        onFocus={e => e.target.select()}
+        onChange={e => onChange(Math.max(min, parseInt(e.target.value) || min))}
+        className="w-14 text-center border border-gray-200 rounded-lg py-1.5 text-base font-semibold" />
+      <button type="button" onClick={inc}
+        className="w-9 h-9 rounded-full bg-misky-100 hover:bg-misky-200 active:bg-misky-300 text-misky-700 font-bold text-lg flex items-center justify-center flex-shrink-0">+</button>
+    </div>
   );
 }
 
@@ -3293,10 +3503,18 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
     // Antes esto sacaba la receta de la pantalla apenas se tocaba "Eliminar",
     // sin esperar la confirmación de la base de datos — si el borrado fallaba
     // (sin internet, permisos, etc.) la receta igual desaparecía de la vista
-    // aunque siguiera existiendo en la base. Ahora se espera la respuesta y,
-    // si falla, se avisa y la receta se queda donde estaba.
-    const { error } = await supabase.from("recipes").delete().eq("id", id);
-    if (error) { alert("No se pudo eliminar la receta. Probá de nuevo."); return; }
+    // aunque siguiera existiendo en la base, y volvía a aparecer al
+    // actualizar la página. Ahora se espera la respuesta y, si falla, se
+    // avisa con el motivo y la receta se queda donde estaba.
+    let { error } = await supabase.from("recipes").delete().eq("id", id);
+    if (error) {
+      // Si la base rechaza el borrado porque la receta todavía tiene
+      // ingredientes cargados (recipe_ingredients), los borramos primero y
+      // reintentamos borrar la receta.
+      await supabase.from("recipe_ingredients").delete().eq("recipe_id", id);
+      ({ error } = await supabase.from("recipes").delete().eq("id", id));
+    }
+    if (error) { alert("No se pudo eliminar la receta: " + error.message); return; }
     setRecipes(prev => prev.filter(r => r.id !== id));
     await logActivity(profile, "delete", "receta", name);
     if (selected === id) setSelected(recipes.find(r => r.id !== id)?.id ?? null);
@@ -3895,9 +4113,12 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
     try { localStorage.setItem(COMANDA_LABEL_KEY, clientLabel); } catch {}
   }, [clientLabel]);
 
-  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
+  // El tilde agrega/saca el plato del pedido (antes solo agregaba: tocarlo
+  // de nuevo no hacía nada). La cantidad del selector −/+ ya no baja de 1 —
+  // para sacar un plato se destilda, no se lleva el número a 0.
+  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) > 0 ? 0 : 1 }));
   const setQty = (id, val) => {
-    const n = Math.max(0, parseInt(val) || 0);
+    const n = Math.max(1, parseInt(val) || 1);
     setItems(p => ({ ...p, [id]: n }));
   };
   const clearCart = () => {
@@ -4060,15 +4281,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
                   <p className="text-xs text-gray-400">{r.category}</p>
                 </div>
                 <p className="font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
-                {qty > 0 && (
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => setQty(r.id, qty - 1)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center">−</button>
-                    <input type="number" min="0" value={qty}
-                      onChange={e => setQty(r.id, e.target.value)}
-                      className="w-10 text-center border border-gray-200 rounded-lg py-0.5 text-sm font-medium" />
-                    <button onClick={() => setQty(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-misky-100 hover:bg-misky-200 text-misky-700 font-bold text-sm flex items-center justify-center">+</button>
-                  </div>
-                )}
+                {qty > 0 && <QtyStepper value={qty} onChange={v => setQty(r.id, v)} />}
               </div>
             );
           })}
@@ -4469,8 +4682,12 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const deleteSelected = async () => {
     const ids = selectedRecipes.map(r => r.id);
     if (ids.length === 0) return;
-    const { error } = await supabase.from("recipes").delete().in("id", ids);
-    if (error) { alert("No se pudieron eliminar las recetas. Probá de nuevo."); return; }
+    let { error } = await supabase.from("recipes").delete().in("id", ids);
+    if (error) {
+      await supabase.from("recipe_ingredients").delete().in("recipe_id", ids);
+      ({ error } = await supabase.from("recipes").delete().in("id", ids));
+    }
+    if (error) { alert("No se pudieron eliminar las recetas: " + error.message); return; }
     setRecipes(prev => prev.filter(r => !ids.includes(r.id)));
     await logActivity(profile, "delete", "recetas", ids.length + " recetas (borrado masivo)");
     clearSelection();
@@ -4507,19 +4724,25 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                    className="border border-misky-200 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-misky-400 w-44" />
             <button onClick={clearSelection} className="text-sm text-gray-400 hover:text-gray-600 ml-auto">Cancelar selección</button>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          {/* Cada receta elegida en su propia fila (antes era una nube de
+              "chips" chiquitos muy incómodos de tocar en el celular). */}
+          <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
             {selectedRecipes.map(r => (
-              <span key={r.id} className="inline-flex items-center gap-1 bg-white border border-misky-200 rounded-full pl-2 pr-1 py-0.5 text-xs text-gray-600">
-                {r.name}
-                <input type="number" min="1" value={cartBatch?.[r.id] || 1} onChange={e => setBatch(r.id, e.target.value)}
-                  title="Cantidad de tandas" className="w-9 text-center border-none bg-transparent text-misky-600 font-semibold focus:outline-none" />×
-                <button onClick={() => setCartSel(prev => ({ ...prev, [r.id]: false }))} className="text-gray-300 hover:text-rose-400 px-1">×</button>
-              </span>
+              <div key={r.id} className="flex items-center gap-2 bg-white border border-misky-200 rounded-lg px-2.5 py-1.5 text-sm text-gray-700">
+                <span className="flex-1 min-w-0 truncate">{r.name}</span>
+                <span className="text-xs text-gray-400">tandas</span>
+                <QtyStepper value={cartBatch?.[r.id] || 1} onChange={v => setBatch(r.id, v)} />
+                <button onClick={() => setCartSel(prev => ({ ...prev, [r.id]: false }))}
+                  title="Sacar de la selección"
+                  className="w-8 h-8 flex-shrink-0 rounded-full text-gray-300 hover:bg-rose-50 hover:text-rose-500 flex items-center justify-center text-lg">×</button>
+              </div>
             ))}
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => downloadRecipesText(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🖨️ Imprimir {selectedCount} receta{selectedCount !== 1 ? "s" : ""}</button>
             <button onClick={() => downloadShoppingListHTML(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">🛒 Lista de compras</button>
+            <button onClick={() => generateRecetarioPDF(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">📄 Recetas en PDF</button>
+            <button onClick={() => generateShoppingListPDF(selectedRecipesWithBatches, ingredients, business)} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">📄 Lista de compras en PDF</button>
             <button onClick={() => setModal("bulkEdit")} className="text-sm text-misky-700 hover:text-misky-800 font-medium underline">✏️ Editar en lote ({selectedCount})</button>
             {profile?.role === "admin" && <button onClick={() => setDelConfirm({
                 title: `¿Eliminar ${selectedCount} receta${selectedCount !== 1 ? "s" : ""}?`,
@@ -4805,9 +5028,11 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
     setItems(next);
   };
 
-  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) === 0 ? 1 : p[id] }));
+  // El tilde agrega/saca la receta de la lista (antes solo agregaba). Las
+  // tandas ya no bajan de 1 — para sacar una receta se destilda.
+  const toggle = (id) => setItems(p => ({ ...p, [id]: (p[id] || 0) > 0 ? 0 : 1 }));
   const setBatches = (id, val) => {
-    const n = Math.max(0, parseInt(val) || 0);
+    const n = Math.max(1, parseInt(val) || 1);
     setItems(p => ({ ...p, [id]: n }));
   };
 
@@ -4823,10 +5048,10 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
       ingredients, business
     );
   };
-  const descargar = () => {
-    downloadMisePrepHTML(
+  const descargarPDF = () => {
+    generateMisePrepPDF(
       selected.map(r => ({ ...r, _batches: items[r.id] || 1 })),
-      ingredients, business, "file"
+      ingredients, business
     );
   };
 
@@ -4862,13 +5087,9 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
                   <p className="text-xs text-gray-400">{r.category} · {r.portions} porc.</p>
                 </div>
                 {qty > 0 && (
-                  <div className="flex items-center gap-1">
-                    <span className="text-xs text-gray-400 mr-1">Tandas</span>
-                    <button onClick={() => setBatches(r.id, qty - 1)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center">−</button>
-                    <input type="number" min="0" value={qty}
-                      onChange={e => setBatches(r.id, e.target.value)}
-                      className="w-10 text-center border border-gray-200 rounded-lg py-0.5 text-sm font-medium" />
-                    <button onClick={() => setBatches(r.id, qty + 1)} className="w-7 h-7 rounded-full bg-misky-100 hover:bg-misky-200 text-misky-700 font-bold text-sm flex items-center justify-center">+</button>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-400">Tandas</span>
+                    <QtyStepper value={qty} onChange={v => setBatches(r.id, v)} />
                   </div>
                 )}
               </div>
@@ -4882,9 +5103,9 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
       {selected.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-misky-200 p-5 space-y-3">
           <Btn onClick={generar} className="w-full">🔪 Generar mise en place ({selected.length})</Btn>
-          <button onClick={descargar}
+          <button onClick={descargarPDF}
             className="w-full px-4 py-2.5 border border-misky-200 rounded-lg text-sm text-misky-700 font-medium hover:bg-misky-50 transition-colors">
-            ⬇️ Descargar archivo
+            📄 Descargar PDF
           </button>
           <button onClick={() => setItems({})}
             className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
