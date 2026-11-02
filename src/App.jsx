@@ -654,6 +654,11 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
   .print-btn:hover { background: #f9f4fb; }
   .back-btn { position: fixed; top: 20px; left: 24px; background: white; color: #6b7280; border: none; border-radius: 999px; padding: 10px 18px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15); cursor: pointer; }
   .back-btn:hover { background: #f3f4f6; }
+  /* Aviso en pantalla (se oculta al imprimir): muchos celulares no respetan
+     el pedido de hoja apaisada de este diseño (2 recetas por hoja) y abren
+     la impresión en vertical por defecto — hay que elegirlo a mano en el
+     cuadro de impresión. */
+  .orientation-hint { max-width: 1050px; margin: 64px auto 0; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 13px; padding: 10px 14px; border-radius: 10px; text-align: center; }
   /* En el celular no hay lugar para 2 recetas lado a lado — se apilan y se ven
      bien igual; en pantallas grandes y al imprimir quedan una al lado de otra. */
   @media (max-width: 720px) { .print-page { flex-direction: column; } }
@@ -671,6 +676,7 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
     .recipe-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .print-btn { display: none; }
     .back-btn { display: none; }
+    .orientation-hint { display: none; }
   }
 </style>
 </head>
@@ -684,6 +690,7 @@ function downloadRecipesText(selectedRecipes, ingredients, business) {
       <p>Recetario · Misky Mikuy</p>
     </div>
   </div>
+  <p class="orientation-hint">📄 Al tocar "Imprimir / Guardar PDF", elegí hoja <strong>Horizontal</strong> (apaisada) en el cuadro de impresión — si no, algunos celulares la muestran en vertical y las recetas se ven amontonadas.</p>
   ${recipesHtml}
   <div class="footer">Generado desde RecetApp · ${fecha}</div>
 </body>
@@ -899,7 +906,7 @@ function downloadShoppingListHTML(selectedRecipes, ingredients, business) {
 // Genera una lista de "mise en place": para las recetas elegidas, suma cuánto
 // se necesita de cada ingrediente en total (sin redondear para compra, sin
 // precios) para que la cocina pueda pesar/preparar todo de una sola vez.
-function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
+function downloadMisePrepHTML(selectedRecipes, ingredients, business, mode = "view") {
   const selections = selectedRecipes.map(r => ({ recipeId: r.id, portionsMade: r.portions * (r._batches || 1) }));
   const report = calcProductionReport(selections, selectedRecipes, ingredients, business);
   const fecha = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
@@ -1094,7 +1101,14 @@ function downloadMisePrepHTML(selectedRecipes, ingredients, business) {
 </body>
 </html>`;
 
-  openGeneratedHTML(html);
+  // "mode" = "file" descarga el archivo .html directo al celular (para
+  // guardarlo o compartirlo con cocina); por defecto se muestra en pantalla
+  // para ir tildando con el checklist mientras se prepara.
+  if (mode === "file") {
+    downloadTextFile(html, `mise-en-place-${new Date().toISOString().slice(0, 10)}.html`);
+  } else {
+    openGeneratedHTML(html);
+  }
 }
 
 function exportCSV(recipes, ingredients, business) {
@@ -3276,8 +3290,13 @@ function RecipesTab({ recipes, setRecipes, ingredients, setIngredients, business
   };
 
   const del = async (id, name) => {
-    
-    await supabase.from("recipes").delete().eq("id", id);
+    // Antes esto sacaba la receta de la pantalla apenas se tocaba "Eliminar",
+    // sin esperar la confirmación de la base de datos — si el borrado fallaba
+    // (sin internet, permisos, etc.) la receta igual desaparecía de la vista
+    // aunque siguiera existiendo en la base. Ahora se espera la respuesta y,
+    // si falla, se avisa y la receta se queda donde estaba.
+    const { error } = await supabase.from("recipes").delete().eq("id", id);
+    if (error) { alert("No se pudo eliminar la receta. Probá de nuevo."); return; }
     setRecipes(prev => prev.filter(r => r.id !== id));
     await logActivity(profile, "delete", "receta", name);
     if (selected === id) setSelected(recipes.find(r => r.id !== id)?.id ?? null);
@@ -4296,7 +4315,10 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   // 20-30 recetas afectadas, revisarlas una por una llevaba casi 90 minutos.
   const recipeRows = useMemo(() => recipes.map(r => {
     const c = calcRecipe(r, ingredients, business);
-    const missing = [...new Set(c.lines.filter(l => !l.ing.buy_price).map(l => l.ing.name))];
+    // Un ingrediente en $0 a propósito (ej. Agua) no es un precio que falte
+    // cargar — antes se marcaba igual que uno recién creado sin precio, y
+    // aparecía en el cartel de "falta precio" sin necesidad.
+    const missing = [...new Set(c.lines.filter(l => l.ing.buy_price == null).map(l => l.ing.name))];
     return { r, c, missing };
   }), [recipes, ingredients, business]);
 
@@ -4447,7 +4469,8 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
   const deleteSelected = async () => {
     const ids = selectedRecipes.map(r => r.id);
     if (ids.length === 0) return;
-    await supabase.from("recipes").delete().in("id", ids);
+    const { error } = await supabase.from("recipes").delete().in("id", ids);
+    if (error) { alert("No se pudieron eliminar las recetas. Probá de nuevo."); return; }
     setRecipes(prev => prev.filter(r => !ids.includes(r.id)));
     await logActivity(profile, "delete", "recetas", ids.length + " recetas (borrado masivo)");
     clearSelection();
@@ -4800,6 +4823,12 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
       ingredients, business
     );
   };
+  const descargar = () => {
+    downloadMisePrepHTML(
+      selected.map(r => ({ ...r, _batches: items[r.id] || 1 })),
+      ingredients, business, "file"
+    );
+  };
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
@@ -4853,6 +4882,10 @@ function MiseEnPlaceTab({ recipes, ingredients, business, cartSel, cartBatch, ca
       {selected.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-misky-200 p-5 space-y-3">
           <Btn onClick={generar} className="w-full">🔪 Generar mise en place ({selected.length})</Btn>
+          <button onClick={descargar}
+            className="w-full px-4 py-2.5 border border-misky-200 rounded-lg text-sm text-misky-700 font-medium hover:bg-misky-50 transition-colors">
+            ⬇️ Descargar archivo
+          </button>
           <button onClick={() => setItems({})}
             className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm text-gray-500 hover:bg-gray-50 transition-colors">
             Limpiar selección
