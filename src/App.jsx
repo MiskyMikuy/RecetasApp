@@ -1269,22 +1269,6 @@ function renderOffscreen(fullHtmlDoc) {
   return container;
 }
 
-// Agrega UNA imagen ya renderizada (un canvas) como una hoja completa del
-// PDF, encogiéndola lo necesario (hasta un ~60%) para que entre entera —
-// usado para el recetario, 2 recetas por hoja.
-function addCanvasAsFittedPage(doc, canvas, { marginMm = 8, minScale = 0.6 } = {}) {
-  const usableWmm = doc.internal.pageSize.getWidth() - marginMm * 2;
-  const usableHmm = doc.internal.pageSize.getHeight() - marginMm * 2;
-  const pxToMmAt1x = usableWmm / canvas.width;
-  let imgWmm = canvas.width * pxToMmAt1x;
-  let imgHmm = canvas.height * pxToMmAt1x;
-  const fitScale = Math.max(minScale, Math.min(1, usableHmm / imgHmm));
-  imgWmm *= fitScale; imgHmm *= fitScale;
-  const x = marginMm + (usableWmm - imgWmm) / 2;
-  const y = marginMm + (usableHmm - imgHmm) / 2;
-  doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", x, y, imgWmm, imgHmm);
-}
-
 // Agrega un canvas que puede ser más alto que una hoja, partido en tantas
 // hojas como haga falta — usado para lista de compras y mise en place.
 function addTallCanvasAsPages(doc, canvas, { marginMm = 8 } = {}) {
@@ -1307,31 +1291,194 @@ function addTallCanvasAsPages(doc, canvas, { marginMm = 8 } = {}) {
   return totalPages;
 }
 
-async function generateRecetarioPDF(selectedRecipes, ingredients, business) {
-  if (pdfGenerating) return;
-  pdfGenerating = true;
-  showPdfToast("Preparando PDF…");
-  let container;
+// ─── PDF DEL RECETARIO: ELEGIR HORIZONTAL O VERTICAL ──────────────────────
+// Antes de armar el PDF de recetas se pregunta cómo lo quiere: horizontal
+// (2 recetas por hoja, conviene para imprimir) o vertical (las recetas una
+// debajo de la otra, las que entren por hoja; más cómodo en pantalla). Se recuerda la última elección.
+const RECETARIO_ORIENT_KEY = "recetapp_pdf_orientacion";
+function askRecetarioOrientation(color) {
+  return new Promise(resolve => {
+    let last = null;
+    try { last = localStorage.getItem(RECETARIO_ORIENT_KEY); } catch (e) {}
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;";
+    const option = (value, icon, title, sub) => `
+      <button data-v="${value}" style="display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:#fff;border:2px solid ${last === value ? color : "#e5e7eb"};border-radius:14px;padding:14px;margin-top:10px;cursor:pointer;font:inherit;color:#1f2937;">
+        <span style="font-size:30px;line-height:1;">${icon}</span>
+        <span style="flex:1;"><strong style="display:block;font-size:16px;">${title}${last === value ? ` <span style="font-size:11px;font-weight:600;color:${color};">· la última vez</span>` : ""}</strong>
+        <span style="font-size:13px;color:#6b7280;">${sub}</span></span>
+      </button>`;
+    overlay.innerHTML = `
+      <div style="background:#fff;border-radius:18px;max-width:380px;width:100%;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.25);">
+        <p style="margin:0;font-size:18px;font-weight:700;color:#1f2937;">¿Cómo querés el PDF?</p>
+        ${option("landscape", "🖨️", "Horizontal", "2 recetas por hoja · para imprimir")}
+        ${option("portrait", "📱", "Vertical", "Una debajo de la otra · para ver en pantalla")}
+        <button data-v="" style="width:100%;margin-top:14px;background:none;border:none;color:#6b7280;font:600 14px inherit;padding:8px;cursor:pointer;">Cancelar</button>
+      </div>`;
+    const done = (v) => {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (v) { try { localStorage.setItem(RECETARIO_ORIENT_KEY, v); } catch (e) {} }
+      resolve(v || null);
+    };
+    overlay.addEventListener("click", e => {
+      if (e.target === overlay) return done(null);
+      const b = e.target.closest("button[data-v]");
+      if (b) done(b.getAttribute("data-v"));
+    });
+    document.body.appendChild(overlay);
+  });
+}
+
+// Arma el PDF del recetario a partir del HTML completo. El HTML se dibuja en
+// una ventanita oculta con el ancho exacto de una hoja A4 — así se ve igual
+// desde el celular que desde la compu (antes, en el celular, tomaba el ancho
+// de la pantalla: apilaba las 2 recetas en una hoja horizontal y cortaba lo
+// que no entraba, por ejemplo el procedimiento). Después corta las hojas
+// entre una fila y otra, nunca a la mitad de una línea, y nunca pierde nada.
+//  - pairSelector: cada par de recetas (empieza hoja nueva en horizontal)
+//  - cardSelector: cada receta (en vertical van una debajo de la otra)
+let recetarioPdfBusy = false;
+async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, cardSelector, extraCss = "", overlayBg = "rgba(0,0,0,.8)" }) {
+  if (recetarioPdfBusy) return;
+  recetarioPdfBusy = true;
+  const overlay = document.createElement("div");
+  overlay.style.cssText = `position:fixed;inset:0;z-index:99999;background:${overlayBg};color:#fff;display:flex;align-items:center;justify-content:center;font:600 17px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px;`;
+  overlay.textContent = "Preparando PDF…";
+  document.body.appendChild(overlay);
+  let iframe = null;
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const loadOnce = (src, ready) => new Promise((resolve, reject) => {
+    if (ready()) return resolve();
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => (ready() ? resolve() : reject(new Error("no se pudo preparar la herramienta de PDF")));
+    s.onerror = () => reject(new Error("no se pudieron cargar las herramientas de PDF (revisá la conexión a internet)"));
+    document.head.appendChild(s);
+  });
   try {
-    await loadPdfLibs();
-    const html = downloadRecipesText(selectedRecipes, ingredients, business, "string");
-    container = renderOffscreen(html);
-    const pages = Array.from(container.querySelectorAll(".print-page"));
-    const doc = new window.jspdf.jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-    for (let i = 0; i < pages.length; i++) {
-      showPdfToast(`Preparando PDF… hoja ${i + 1} de ${pages.length}`);
-      const canvas = await window.html2canvas(pages[i], { scale: 2, backgroundColor: "#ffffff" });
-      if (i > 0) doc.addPage();
-      addCanvasAsFittedPage(doc, canvas);
+    await loadOnce("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js", () => !!window.html2canvas);
+    await loadOnce("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js", () => !!(window.jspdf && window.jspdf.jsPDF));
+
+    const baseW = landscape ? 1123 : 794;   // ancho de una hoja A4 en pantalla
+    const pdfW = landscape ? 297 : 210;
+    const pdfH = landscape ? 210 : 297;
+    const m = 8;                            // margen en mm
+    const ratio = (pdfH - 2 * m) / (pdfW - 2 * m);
+    let W = baseW;
+
+    iframe = document.createElement("iframe");
+    iframe.style.cssText = `position:fixed;left:-20000px;top:0;width:${W}px;height:1000px;border:0;`;
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow.document;
+    doc.open(); doc.write(html.replace(/<script[\s\S]*?<\/script>/gi, "")); doc.close();
+    await wait(250);
+
+    const layout = landscape
+      ? `${pairSelector}{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:flex-start!important;gap:12px!important}
+         ${pairSelector}>${cardSelector}{flex:1 1 0!important;min-width:0!important}`
+      : `${pairSelector}{display:block!important}
+         ${pairSelector}>${cardSelector}{width:auto!important}
+         ${cardSelector}+${cardSelector}{margin-top:12px!important}`;
+    const st = doc.createElement("style");
+    st.textContent = `html,body{background:#fff!important;padding:0!important;margin:0!important}
+      ${pairSelector}{max-width:none!important;margin:0 0 12px!important;padding:0!important}
+      ${cardSelector}{box-shadow:none!important;border:1px solid #e5e7eb!important}
+      ${layout}
+      ${extraCss}`;
+    doc.head.appendChild(st);
+    // El procedimiento se parte en líneas para poder cortar la hoja entre una línea y otra.
+    doc.querySelectorAll(".procedure").forEach(el => {
+      el.innerHTML = el.innerHTML.split(/<br\s*\/?>/i).map(t => '<div class="proc-line">' + (t || "&nbsp;") + "</div>").join("");
+    });
+    await wait(100);
+
+    // Horizontal: si un par de recetas no entra en una hoja, se achica todo
+    // un poco (hasta ~60%) para que las dos queden juntas en la misma hoja.
+    const blocks = Array.from(doc.querySelectorAll(landscape ? pairSelector : cardSelector));
+    if (landscape && blocks.length) {
+      for (const k of [1, 1.15, 1.3, 1.45, 1.6]) {
+        W = Math.round(baseW * k);
+        iframe.style.width = W + "px";
+        await wait(80);
+        const ph = ratio * W;
+        if (blocks.every((p, i) => { const r = p.getBoundingClientRect(); return (i === 0 ? r.bottom : r.height) <= ph; })) break;
+      }
     }
-    doc.save(`RecetApp_${PDF_SIGLA}_Recetario.pdf`);
+    const pageH = ratio * W;
+    const totalH = Math.ceil(doc.documentElement.scrollHeight);
+    iframe.style.height = totalH + "px";
+    await wait(100);
+
+    const atoms = Array.from(doc.querySelectorAll("tr,h1,h2,h3,h4,p,li,.proc-line,.section-title,.recipe-header,.page-header,.footer,img"))
+      .map(e => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; })
+      .filter(a => a[1] - a[0] > 0);
+    const blockTops = blocks.map(e => e.getBoundingClientRect().top).slice(1);
+    const isSafe = y => !atoms.some(a => a[0] + 1 < y && y < a[1] - 1);
+
+    // Dónde cortar cada hoja: antes de cada par (horizontal) o de cada receta
+    // (vertical), o en un lugar que no parta una fila ni una línea.
+    const cuts = [0];
+    let y0 = 0;
+    while (y0 < totalH - 2) {
+      const limit = y0 + pageH;
+      let y1;
+      // Si lo que queda hasta la próxima receta (o hasta el final) se pasa
+      // apenas de la hoja (sólo el borde de la tarjeta), entra en esta misma
+      // hoja usando el margen — así no queda una hoja casi en blanco.
+      // Horizontal: cada par de recetas empieza hoja nueva.
+      // Vertical: entran en la hoja todas las recetas completas que quepan
+      // (una debajo de la otra); la que no entra entera pasa a la hoja
+      // siguiente, y sólo una receta más larga que una hoja se corta.
+      const nextStop = landscape
+        ? (blockTops.find(t => t > y0 + 20) ?? totalH)
+        : [...blockTops, totalH].filter(t => t > y0 + 20 && t <= limit + 28).pop();
+      if (nextStop !== undefined && nextStop <= limit + 28) {
+        y1 = nextStop;
+      } else {
+        const cands = atoms.reduce((acc, a) => acc.concat(a), [])
+          .filter(y => y > y0 + pageH * 0.35 && y <= limit)
+          .sort((a, b) => b - a);
+        y1 = cands.find(isSafe) || limit;
+      }
+      if (y1 <= y0 + 1) y1 = Math.min(limit, totalH);
+      cuts.push(y1);
+      y0 = y1;
+    }
+
+    const pdf = new window.jspdf.jsPDF({ orientation: landscape ? "landscape" : "portrait", unit: "mm", format: "a4" });
+    const contentW = pdfW - 2 * m;
+    const pages = cuts.length - 1;
+    for (let i = 0; i < pages; i++) {
+      overlay.textContent = `Preparando PDF… hoja ${i + 1} de ${pages}`;
+      await wait(30);
+      const top = cuts[i], sh = cuts[i + 1] - cuts[i];
+      const canvas = await window.html2canvas(doc.body, {
+        scale: 1.5, backgroundColor: "#ffffff", useCORS: true, logging: false,
+        x: 0, y: top, width: W, height: sh, windowWidth: W, windowHeight: totalH, scrollX: 0, scrollY: 0,
+      });
+      if (i > 0) pdf.addPage();
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.88), "JPEG", m, m, contentW, (sh * contentW) / W);
+    }
+    pdf.save(filename);
   } catch (e) {
-    alert("No se pudo armar el PDF: " + e.message);
+    alert("No se pudo armar el PDF: " + (e && e.message ? e.message : "error") + ".");
   } finally {
-    if (container) container.remove();
-    hidePdfToast();
-    pdfGenerating = false;
+    if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    recetarioPdfBusy = false;
   }
+}
+
+async function generateRecetarioPDF(selectedRecipes, ingredients, business) {
+  if (pdfGenerating || recetarioPdfBusy || selectedRecipes.length === 0) return;
+  const orient = await askRecetarioOrientation("#612577");
+  if (!orient) return;
+  const html = downloadRecipesText(selectedRecipes, ingredients, business, "string");
+  await recetarioHtmlToPdf(html, `RecetApp_${PDF_SIGLA}_Recetario.pdf`, {
+    landscape: orient === "landscape", pairSelector: ".print-page", cardSelector: ".recipe",
+    extraCss: ".print-btn,.back-btn,.orientation-hint,.page-header,.footer{display:none!important}",
+    overlayBg: "rgba(53,23,64,.88)",
+  });
 }
 
 async function generateShoppingListPDF(selectedRecipes, ingredients, business) {
