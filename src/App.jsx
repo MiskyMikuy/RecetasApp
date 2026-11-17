@@ -2031,7 +2031,7 @@ const canP = (profile, tab, group, action = "ver") => {
 // Can see tab at all?
 const canSeeTabPerms = (profile, tab) => {
   if (profile?.role === "admin") return true;
-  if (tab === "admin") return profile?.permissions?.usuarios === true;
+  if (tab === "admin") return (profile?.role === "admin" || profile?.permissions?.usuarios === true);
   const perms = profile?.permissions;
   if (!perms) return false;
   const tabP = perms[tab];
@@ -2060,7 +2060,7 @@ const getVisibleTabIds = (profile) => {
   if (!esMozo && canSeeTabPerms(profile, "ingredients")) ids.push("ingredients");
   if (esMozo || profile?.role === "admin") ids.push("comanda");
   if (!esMozo && canSeeTabPerms(profile, "recipes"))     ids.push("miseenplace");
-  if ((!esMozo && canSeeTabPerms(profile, "business")) || profile?.permissions?.usuarios === true) ids.push("settings");
+  if ((!esMozo && canSeeTabPerms(profile, "business")) || (profile?.role === "admin" || profile?.permissions?.usuarios === true)) ids.push("settings");
   return ids;
 };
 
@@ -3502,7 +3502,10 @@ function IngredientsTab({ ingredients, setIngredients, setRecipes, profile }) {
 // acá adentro, con un submenú tipo "lista → detalle" (como en RecetApp SA).
 function SettingsTab({ business, setBusiness, profile, canSeeCosts }) {
   const [section, setSection] = useState(null); // null | "costos" | "usuarios"
-  const canUsers = profile?.permissions?.usuarios === true;
+  // El Admin siempre puede administrar usuarios, aunque su permiso
+  // "usuarios" no esté marcado (pasaba en Gastrobio: el Admin creado a mano
+  // en la base no tenía ese permiso y no le aparecía Usuarios en Ajustes).
+  const canUsers = (profile?.role === "admin" || profile?.permissions?.usuarios === true);
 
   if (section) {
     return (
@@ -5744,7 +5747,7 @@ export default function App() {
     { id:"ingredients", label:"📦 Ingredientes",   show: !esMozo && canSeeTab("ingredients") },
     { id:"comanda",     label:"🧾 Pedido",         show: esMozo || profile?.role === "admin" },
     { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
-    { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || profile?.permissions?.usuarios === true },
+    { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || (profile?.role === "admin" || profile?.permissions?.usuarios === true) },
   ].filter(t => t.show);
   // Las pestañas van agrupadas por para qué se usan, para que el menú tenga
   // menos íconos: (1) Resumen, Pedido y Mise en place, que trabajan con las
