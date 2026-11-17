@@ -4378,6 +4378,12 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   // de cada plato, no un total a cobrar. Con esto tildado, el mensaje sale
   // directo sin esa línea.
   const [quoteMode, setQuoteMode] = useState(false);
+  // La lista de todas las recetas queda plegada detrás de "Agregar plato"
+  // (con buscador): en la práctica los platos vienen de la selección de
+  // Resumen, y con cientos de recetas había que bajar mucho para llegar al
+  // resumen, al descuento y a enviar.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSearch, setAddSearch] = useState("");
 
   // Selección hecha en la pestaña Resumen (carrito compartido) — un botón
   // opcional para traerla acá sin tener que volver a tildar todo a mano. No
@@ -4550,7 +4556,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
   return (
     <div className={`space-y-4 max-w-2xl mx-auto ${selected.length > 0 ? "pb-24" : ""}`}>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-        <h2 className="font-bold text-gray-800 text-lg mb-4">🧾 Armar pedido</h2>
+        <h2 className="font-bold text-gray-800 text-lg mb-3">🧾 Armar pedido</h2>
         {cartCount > 0 && (
           <button onClick={useCartSelection}
             className="w-full flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-sm mb-4 hover:bg-amber-100 transition-colors">
@@ -4558,26 +4564,50 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
             <span className="text-amber-600 text-xs">Tocar para cargar →</span>
           </button>
         )}
-        <div className="space-y-2">
-          {recipes.map(r => {
-            const c = calcRecipe(r, ingredients, business);
-            const qty = items[r.id] || 0;
-            return (
-              <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-misky-300 bg-misky-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
-                <input type="checkbox" checked={qty > 0}
-                  onChange={() => toggle(r.id)}
-                  className="w-5 h-5 accent-misky-500 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-800 text-sm">{r.name}</p>
-                  <p className="text-xs text-gray-400">{r.category}</p>
+        {(() => {
+          const listOpen = addOpen || (selected.length === 0 && cartCount === 0);
+          const q = normalizeName(addSearch);
+          const shown = q ? recipes.filter(r => normalizeName(r.name).includes(q) || normalizeName(r.category).includes(q)) : recipes;
+          return (
+            <>
+              {!listOpen ? (
+                <button onClick={() => setAddOpen(true)}
+                  className="w-full border-2 border-dashed border-misky-200 text-misky-700 hover:bg-misky-50 rounded-lg py-2.5 text-sm font-medium transition-colors">
+                  ➕ Agregar plato
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input value={addSearch} onChange={e => setAddSearch(e.target.value)} placeholder="🔍 Buscar plato..."
+                      className="flex-1 min-w-0 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-misky-400" />
+                    {(selected.length > 0 || cartCount > 0) && (
+                      <button onClick={() => { setAddOpen(false); setAddSearch(""); }}
+                        className="text-sm text-gray-500 hover:text-gray-700 px-2 py-2 flex-shrink-0">Cerrar</button>
+                    )}
+                  </div>
+                  {shown.map(r => {
+                    const c = calcRecipe(r, ingredients, business);
+                    const qty = items[r.id] || 0;
+                    return (
+                      <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-misky-300 bg-misky-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
+                        <input type="checkbox" checked={qty > 0}
+                          onChange={() => toggle(r.id)}
+                          className="w-5 h-5 accent-misky-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-800 text-sm">{r.name}</p>
+                          <p className="text-xs text-gray-400">{r.category}</p>
+                        </div>
+                        <p className="font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
+                      </div>
+                    );
+                  })}
+                  {recipes.length === 0 && <p className="text-center text-gray-400 py-8">Sin recetas disponibles</p>}
+                  {recipes.length > 0 && shown.length === 0 && <p className="text-center text-gray-400 py-6">Sin resultados</p>}
                 </div>
-                <p className="font-bold text-misky-600">${c.roundedPrice.toLocaleString("es-AR")}</p>
-                {qty > 0 && <QtyStepper value={qty} onChange={v => setQty(r.id, v)} />}
-              </div>
-            );
-          })}
-          {recipes.length === 0 && <p className="text-center text-gray-400 py-8">Sin recetas disponibles</p>}
-        </div>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {selected.length > 0 && (
@@ -4587,12 +4617,19 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
             const c = calcRecipe(r, ingredients, business);
             const qty = items[r.id];
             return (
-              <div key={r.id} className="flex justify-between text-sm">
-                <span className="text-gray-600">
-                  {qty}× {r.name}
-                  {qty > 1 && <span className="text-gray-400"> (${c.roundedPrice.toLocaleString("es-AR")} c/u)</span>}
-                </span>
-                <span className="font-medium">${(c.roundedPrice * qty).toLocaleString("es-AR")}</span>
+              <div key={r.id} className="border-b border-gray-50 pb-2 last:border-b-0">
+                <div className="flex items-start gap-2 text-sm">
+                  <span className="flex-1 min-w-0 text-gray-700 leading-tight">{r.name}</span>
+                  <button onClick={() => toggle(r.id)} title="Sacar del pedido"
+                    className="w-7 h-7 -mt-1 flex-shrink-0 rounded-full text-gray-300 hover:bg-rose-50 hover:text-rose-500 flex items-center justify-center text-lg">×</button>
+                </div>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <div className="flex items-center gap-2">
+                    <QtyStepper value={qty} onChange={v => setQty(r.id, v)} />
+                    <span className="text-xs text-gray-400">${c.roundedPrice.toLocaleString("es-AR")} c/u</span>
+                  </div>
+                  <span className="font-medium text-sm">${(c.roundedPrice * qty).toLocaleString("es-AR")}</span>
+                </div>
               </div>
             );
           })}
@@ -5500,6 +5537,11 @@ export default function App() {
   const [dashSearch, setDashSearch]         = useState("");
 
   useEffect(() => { try { localStorage.setItem("recetapp_last_tab", tab); } catch {} }, [tab]);
+  // Recuerda en cuál de Resumen / Recetas / Pedido se estaba, para volver
+  // ahí al tocar esa pestaña del menú.
+  useEffect(() => {
+    if (["dashboard", "recipes", "comanda"].includes(tab)) { try { localStorage.setItem("recetapp_last_group_tab", tab); } catch {} }
+  }, [tab]);
 
   // Si la pestaña recordada ya no es válida para este perfil (cambiaron sus
   // permisos, o el dispositivo lo comparte otro usuario), la corrige apenas
@@ -5608,6 +5650,20 @@ export default function App() {
     { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
     { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
+  // Resumen, Recetas y Pedido van juntos en una sola pestaña del menú, con
+  // botones arriba para pasar de una a otra (en el celular el menú de abajo
+  // queda con menos íconos). Cada usuario ve solo las que tiene permitidas;
+  // si ve una sola (ej. el Mozo, solo Pedido), no aparecen los botones.
+  const GROUP_IDS = ["dashboard", "recipes", "comanda"];
+  const groupTabs = TABS.filter(t => GROUP_IDS.includes(t.id));
+  const inGroup = GROUP_IDS.includes(tab);
+  const lastGroupTab = (() => { try { return localStorage.getItem("recetapp_last_group_tab"); } catch { return null; } })();
+  const goGroup = () => setTab(groupTabs.find(t => t.id === lastGroupTab)?.id || groupTabs[0].id);
+  const MENU = [];
+  TABS.forEach(t => {
+    if (!GROUP_IDS.includes(t.id)) MENU.push({ ...t, active: tab === t.id, go: () => setTab(t.id) });
+    else if (t === groupTabs[0]) MENU.push({ id: "group", label: t.label, active: inGroup, go: goGroup });
+  });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -5618,9 +5674,9 @@ export default function App() {
             <span className="font-bold text-gray-800 text-lg">RecetApp MM</span>
           </div>
           <nav className="hidden md:flex gap-1">
-            {TABS.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${tab === t.id ? "bg-misky-50 text-misky-700" : "text-gray-500 hover:bg-gray-50"}`}>
+            {MENU.map(t => (
+              <button key={t.id} onClick={t.go}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${t.active ? "bg-misky-50 text-misky-700" : "text-gray-500 hover:bg-gray-50"}`}>
                 {t.label}
               </button>
             ))}
@@ -5652,11 +5708,11 @@ export default function App() {
           menú de arriba ya alcanza. */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 shadow-[0_-2px_10px_rgba(0,0,0,0.06)] z-40 flex"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-        {TABS.map(t => {
+        {MENU.map(t => {
           const [emoji, ...rest] = t.label.split(" ");
           return (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-w-0 ${tab === t.id ? "text-misky-600" : "text-gray-400"}`}>
+            <button key={t.id} onClick={t.go}
+              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-w-0 ${t.active ? "text-misky-600" : "text-gray-400"}`}>
               <span className="text-lg leading-none">{emoji}</span>
               <span className="text-[10px] font-medium leading-none truncate max-w-full px-0.5">{rest.join(" ")}</span>
             </button>
@@ -5664,6 +5720,16 @@ export default function App() {
         })}
       </nav>
       <main className="max-w-7xl mx-auto px-4 py-5 pb-24 md:pb-5">
+        {inGroup && groupTabs.length > 1 && (
+          <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-4 max-w-md">
+            {groupTabs.map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)}
+                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${tab === t.id ? "bg-white text-misky-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         {tab === "dashboard"   && <Dashboard ingredients={ingredients} recipes={recipes} setRecipes={setRecipes} business={business} profile={profile}
                                      cartSel={cartSel} setCartSel={setCartSel} cartBatch={cartBatch} setCartBatch={setCartBatch}
                                      cartLabel={cartLabel} setCartLabel={setCartLabel}
