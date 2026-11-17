@@ -277,8 +277,37 @@ function unitCost(ing) {
   const base = ing.buy_qty > 0 ? ing.buy_price / ing.buy_qty : 0;
   return ing.waste_pct > 0 ? base / (1 - ing.waste_pct / 100) : base;
 }
+// Índice de ingredientes por id, armado una sola vez por cada lista de
+// ingredientes (antes se rearmaba para cada receta, cientos de veces por
+// pantalla, y eso hacía más lenta la app al tildar o buscar).
+const _ingredientIndexCache = new WeakMap();
+function ingredientIndex(ingredients) {
+  let idx = _ingredientIndexCache.get(ingredients);
+  if (!idx) {
+    idx = Object.fromEntries(ingredients.map(i => [i.id, i]));
+    _ingredientIndexCache.set(ingredients, idx);
+  }
+  return idx;
+}
+// ¿La pantalla es angosta (celular)? Sirve para dibujar solo la lista que
+// se ve (tarjetas en el celular, tabla en la compu) en vez de las dos.
+function useIsNarrow() {
+  const query = "(max-width: 639px)";
+  const [narrow, setNarrow] = useState(() => {
+    try { return window.matchMedia(query).matches; } catch { return false; }
+  });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia(query); } catch { return; }
+    const onChange = () => setNarrow(mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange); else mq.addListener(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", onChange); else mq.removeListener(onChange); };
+  }, []);
+  return narrow;
+}
+
 function calcRecipe(recipe, ingredients, business) {
-  const ingMap     = Object.fromEntries(ingredients.map(i => [i.id, i]));
+  const ingMap     = ingredientIndex(ingredients);
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfPerUnit  = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
   const varPct     = ((business.delivery_pct || 0) + (business.iva_pct || 0) + (business.other_var_pct || 0)) / 100;
@@ -1329,16 +1358,19 @@ function askRecetarioOrientation(color) {
   });
 }
 
-// Arma el PDF del recetario a partir del HTML completo. El HTML se dibuja en
-// una ventanita oculta con el ancho exacto de una hoja A4 — así se ve igual
-// desde el celular que desde la compu (antes, en el celular, tomaba el ancho
-// de la pantalla: apilaba las 2 recetas en una hoja horizontal y cortaba lo
-// que no entraba, por ejemplo el procedimiento). Después corta las hojas
-// entre una fila y otra, nunca a la mitad de una línea, y nunca pierde nada.
-//  - pairSelector: cada par de recetas (empieza hoja nueva en horizontal)
-//  - cardSelector: cada receta (en vertical van una debajo de la otra)
+// Arma un PDF a partir de un documento HTML completo (recetario, lista de
+// compras o mise en place). El HTML se dibuja en una ventanita oculta con el
+// ancho exacto de una hoja A4 — así se ve igual desde el celular que desde
+// la compu (si tomara el ancho de la pantalla del celular, apilaría o
+// cortaría cosas). Después corta las hojas entre una fila y otra, nunca a la
+// mitad de una línea, y nunca pierde nada. Para que sea rápido, le saca la
+// "foto" a varias hojas juntas de una sola vez y después las separa.
+//  - pairSelector: cada par de recetas (recetario; en horizontal cada par
+//    empieza hoja nueva). Sin recetario, se deja vacío.
+//  - cardSelector: cada receta (en vertical van una debajo de la otra, las
+//    que entren enteras por hoja).
 let recetarioPdfBusy = false;
-async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, cardSelector, extraCss = "", overlayBg = "rgba(0,0,0,.8)" }) {
+async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector = "", cardSelector = "", extraCss = "", overlayBg = "rgba(0,0,0,.8)" }) {
   if (recetarioPdfBusy) return;
   recetarioPdfBusy = true;
   const overlay = document.createElement("div");
@@ -1364,6 +1396,7 @@ async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, car
     const pdfH = landscape ? 210 : 297;
     const m = 8;                            // margen en mm
     const ratio = (pdfH - 2 * m) / (pdfW - 2 * m);
+    const SCALE = 1.5;                      // nitidez de la "foto"
     let W = baseW;
 
     iframe = document.createElement("iframe");
@@ -1371,18 +1404,22 @@ async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, car
     document.body.appendChild(iframe);
     const doc = iframe.contentWindow.document;
     doc.open(); doc.write(html.replace(/<script[\s\S]*?<\/script>/gi, "")); doc.close();
-    await wait(250);
+    await wait(200);
 
-    const layout = landscape
-      ? `${pairSelector}{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:flex-start!important;gap:12px!important}
-         ${pairSelector}>${cardSelector}{flex:1 1 0!important;min-width:0!important}`
-      : `${pairSelector}{display:block!important}
-         ${pairSelector}>${cardSelector}{width:auto!important}
-         ${cardSelector}+${cardSelector}{margin-top:12px!important}`;
+    let layout = "";
+    if (pairSelector && cardSelector) {
+      layout = landscape
+        ? `${pairSelector}{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:flex-start!important;gap:12px!important}
+           ${pairSelector}>${cardSelector}{flex:1 1 0!important;min-width:0!important}`
+        : `${pairSelector}{display:block!important}
+           ${pairSelector}>${cardSelector}{width:auto!important}
+           ${cardSelector}+${cardSelector}{margin-top:12px!important}`;
+      layout += `
+        ${pairSelector}{max-width:none!important;margin:0 0 12px!important;padding:0!important}
+        ${cardSelector}{box-shadow:none!important;border:1px solid #e5e7eb!important}`;
+    }
     const st = doc.createElement("style");
     st.textContent = `html,body{background:#fff!important;padding:0!important;margin:0!important}
-      ${pairSelector}{max-width:none!important;margin:0 0 12px!important;padding:0!important}
-      ${cardSelector}{box-shadow:none!important;border:1px solid #e5e7eb!important}
       ${layout}
       ${extraCss}`;
     doc.head.appendChild(st);
@@ -1390,16 +1427,17 @@ async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, car
     doc.querySelectorAll(".procedure").forEach(el => {
       el.innerHTML = el.innerHTML.split(/<br\s*\/?>/i).map(t => '<div class="proc-line">' + (t || "&nbsp;") + "</div>").join("");
     });
-    await wait(100);
+    await wait(80);
 
     // Horizontal: si un par de recetas no entra en una hoja, se achica todo
     // un poco (hasta ~60%) para que las dos queden juntas en la misma hoja.
-    const blocks = Array.from(doc.querySelectorAll(landscape ? pairSelector : cardSelector));
-    if (landscape && blocks.length) {
+    const blockSel = landscape ? pairSelector : cardSelector;
+    const blocks = blockSel ? Array.from(doc.querySelectorAll(blockSel)) : [];
+    if (landscape && pairSelector && blocks.length) {
       for (const k of [1, 1.15, 1.3, 1.45, 1.6]) {
         W = Math.round(baseW * k);
         iframe.style.width = W + "px";
-        await wait(80);
+        await wait(60);
         const ph = ratio * W;
         if (blocks.every((p, i) => { const r = p.getBoundingClientRect(); return (i === 0 ? r.bottom : r.height) <= ph; })) break;
       }
@@ -1407,16 +1445,17 @@ async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, car
     const pageH = ratio * W;
     const totalH = Math.ceil(doc.documentElement.scrollHeight);
     iframe.style.height = totalH + "px";
-    await wait(100);
+    await wait(80);
 
-    const atoms = Array.from(doc.querySelectorAll("tr,h1,h2,h3,h4,p,li,.proc-line,.section-title,.recipe-header,.page-header,.footer,img"))
+    const atoms = Array.from(doc.querySelectorAll("tr,h1,h2,h3,h4,p,li,.proc-line,.section-title,.recipe-header,.page-header,.footer,img,.item,.row,label"))
       .map(e => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; })
       .filter(a => a[1] - a[0] > 0);
+    const edges = atoms.reduce((acc, a) => acc.concat(a), []).sort((a, b) => b - a);
     const blockTops = blocks.map(e => e.getBoundingClientRect().top).slice(1);
     const isSafe = y => !atoms.some(a => a[0] + 1 < y && y < a[1] - 1);
 
-    // Dónde cortar cada hoja: antes de cada par (horizontal) o de cada receta
-    // (vertical), o en un lugar que no parta una fila ni una línea.
+    // Dónde cortar cada hoja: antes de cada par (horizontal), entre recetas
+    // completas (vertical), o en un lugar que no parta una fila ni una línea.
     const cuts = [0];
     let y0 = 0;
     while (y0 < totalH - 2) {
@@ -1425,39 +1464,49 @@ async function recetarioHtmlToPdf(html, filename, { landscape, pairSelector, car
       // Si lo que queda hasta la próxima receta (o hasta el final) se pasa
       // apenas de la hoja (sólo el borde de la tarjeta), entra en esta misma
       // hoja usando el margen — así no queda una hoja casi en blanco.
-      // Horizontal: cada par de recetas empieza hoja nueva.
-      // Vertical: entran en la hoja todas las recetas completas que quepan
-      // (una debajo de la otra); la que no entra entera pasa a la hoja
-      // siguiente, y sólo una receta más larga que una hoja se corta.
-      const nextStop = landscape
+      const nextStop = (landscape && pairSelector)
         ? (blockTops.find(t => t > y0 + 20) ?? totalH)
         : [...blockTops, totalH].filter(t => t > y0 + 20 && t <= limit + 28).pop();
       if (nextStop !== undefined && nextStop <= limit + 28) {
         y1 = nextStop;
       } else {
-        const cands = atoms.reduce((acc, a) => acc.concat(a), [])
-          .filter(y => y > y0 + pageH * 0.35 && y <= limit)
-          .sort((a, b) => b - a);
-        y1 = cands.find(isSafe) || limit;
+        y1 = edges.find(y => y > y0 + pageH * 0.35 && y <= limit && isSafe(y)) || limit;
       }
       if (y1 <= y0 + 1) y1 = Math.min(limit, totalH);
       cuts.push(y1);
       y0 = y1;
     }
 
+    // Se fotografían varias hojas juntas de una vez (sin pasarse del tamaño
+    // de imagen que aguanta un celular) y después se separan.
+    const maxChunkH = Math.max(pageH, Math.floor(12e6 / (W * SCALE * SCALE)));
     const pdf = new window.jspdf.jsPDF({ orientation: landscape ? "landscape" : "portrait", unit: "mm", format: "a4" });
     const contentW = pdfW - 2 * m;
     const pages = cuts.length - 1;
-    for (let i = 0; i < pages; i++) {
-      overlay.textContent = `Preparando PDF… hoja ${i + 1} de ${pages}`;
-      await wait(30);
-      const top = cuts[i], sh = cuts[i + 1] - cuts[i];
-      const canvas = await window.html2canvas(doc.body, {
-        scale: 1.5, backgroundColor: "#ffffff", useCORS: true, logging: false,
-        x: 0, y: top, width: W, height: sh, windowWidth: W, windowHeight: totalH, scrollX: 0, scrollY: 0,
+    let i = 0;
+    while (i < pages) {
+      let j = i + 1;
+      while (j < pages && cuts[j + 1] - cuts[i] <= maxChunkH) j++;
+      overlay.textContent = `Preparando PDF… hoja ${j} de ${pages}`;
+      await wait(20);
+      const top = cuts[i], chunkH = cuts[j] - cuts[i];
+      const chunk = await window.html2canvas(doc.body, {
+        scale: SCALE, backgroundColor: "#ffffff", useCORS: true, logging: false,
+        x: 0, y: top, width: W, height: chunkH, windowWidth: W, windowHeight: totalH, scrollX: 0, scrollY: 0,
       });
-      if (i > 0) pdf.addPage();
-      pdf.addImage(canvas.toDataURL("image/jpeg", 0.88), "JPEG", m, m, contentW, (sh * contentW) / W);
+      const k = chunk.width / W;
+      for (let pg = i; pg < j; pg++) {
+        const sy = Math.round((cuts[pg] - top) * k);
+        const sh = Math.max(1, Math.round((cuts[pg + 1] - cuts[pg]) * k));
+        const c = document.createElement("canvas");
+        c.width = chunk.width; c.height = sh;
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(chunk, 0, sy, chunk.width, sh, 0, 0, chunk.width, sh);
+        if (pg > 0) pdf.addPage();
+        pdf.addImage(c.toDataURL("image/jpeg", 0.85), "JPEG", m, m, contentW, ((cuts[pg + 1] - cuts[pg]) * contentW) / W);
+      }
+      i = j;
     }
     pdf.save(filename);
   } catch (e) {
@@ -1482,50 +1531,23 @@ async function generateRecetarioPDF(selectedRecipes, ingredients, business) {
 }
 
 async function generateShoppingListPDF(selectedRecipes, ingredients, business) {
-  if (pdfGenerating) return;
-  pdfGenerating = true;
-  showPdfToast("Preparando PDF…");
-  let container;
-  try {
-    await loadPdfLibs();
-    const html = downloadShoppingListHTML(selectedRecipes, ingredients, business, "string");
-    container = renderOffscreen(html);
-    const target = container.querySelector(".wrap") || container;
-    const doc = new window.jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const canvas = await window.html2canvas(target, { scale: 2, backgroundColor: "#ffffff" });
-    const totalPages = addTallCanvasAsPages(doc, canvas);
-    showPdfToast(`Preparando PDF… hoja ${totalPages} de ${totalPages}`);
-    doc.save(`RecetApp_${PDF_SIGLA}_Lista_de_compras.pdf`);
-  } catch (e) {
-    alert("No se pudo armar el PDF: " + e.message);
-  } finally {
-    if (container) container.remove();
-    hidePdfToast();
-    pdfGenerating = false;
-  }
+  if (pdfGenerating || recetarioPdfBusy || selectedRecipes.length === 0) return;
+  const html = downloadShoppingListHTML(selectedRecipes, ingredients, business, "string");
+  await recetarioHtmlToPdf(html, `RecetApp_${PDF_SIGLA}_Lista_de_compras.pdf`, {
+    landscape: false,
+    extraCss: ".print-btn,.back-btn,.orientation-hint,.page-header,.footer{display:none!important} .wrap{max-width:none!important;margin:0!important;box-shadow:none!important;border-radius:0!important}",
+    overlayBg: "rgba(53,23,64,.88)",
+  });
 }
 
 async function generateMisePrepPDF(selectedRecipes, ingredients, business) {
-  if (pdfGenerating) return;
-  pdfGenerating = true;
-  showPdfToast("Preparando PDF…");
-  let container;
-  try {
-    await loadPdfLibs();
-    const html = downloadMisePrepHTML(selectedRecipes, ingredients, business, "string");
-    container = renderOffscreen(html);
-    const doc = new window.jspdf.jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const canvas = await window.html2canvas(container, { scale: 2, backgroundColor: "#ffffff" });
-    const totalPages = addTallCanvasAsPages(doc, canvas);
-    showPdfToast(`Preparando PDF… hoja ${totalPages} de ${totalPages}`);
-    doc.save(`RecetApp_${PDF_SIGLA}_Mise_en_place.pdf`);
-  } catch (e) {
-    alert("No se pudo armar el PDF: " + e.message);
-  } finally {
-    if (container) container.remove();
-    hidePdfToast();
-    pdfGenerating = false;
-  }
+  if (pdfGenerating || recetarioPdfBusy || selectedRecipes.length === 0) return;
+  const html = downloadMisePrepHTML(selectedRecipes, ingredients, business, "string");
+  await recetarioHtmlToPdf(html, `RecetApp_${PDF_SIGLA}_Mise_en_place.pdf`, {
+    landscape: false,
+    extraCss: ".print-btn,.back-btn,.orientation-hint,.page-header,.footer{display:none!important} .wrap{max-width:none!important;margin:0!important;box-shadow:none!important;border-radius:0!important}",
+    overlayBg: "rgba(53,23,64,.88)",
+  });
 }
 
 function exportCSV(recipes, ingredients, business) {
@@ -1604,6 +1626,36 @@ function CategoryTag({ category, colors }) {
       {category || "Sin categoría"}
     </span>
   );
+}
+
+// ─── COLORES POR CATEGORÍA (Resumen) ─────────────────────────────────────
+// Cada categoría recibe siempre el mismo color (según su nombre), para que
+// la lista de recetas se lea de un vistazo: etiqueta de color, círculo con
+// la inicial y una franja al costado de cada receta.
+const CATEGORY_COLORS = [
+  { chip: "bg-amber-100 text-amber-800",     dot: "bg-amber-400",   stripe: "border-l-amber-400" },
+  { chip: "bg-emerald-100 text-emerald-800", dot: "bg-emerald-500", stripe: "border-l-emerald-500" },
+  { chip: "bg-sky-100 text-sky-800",         dot: "bg-sky-500",     stripe: "border-l-sky-500" },
+  { chip: "bg-rose-100 text-rose-800",       dot: "bg-rose-400",    stripe: "border-l-rose-400" },
+  { chip: "bg-violet-100 text-violet-800",   dot: "bg-violet-500",  stripe: "border-l-violet-500" },
+  { chip: "bg-orange-100 text-orange-800",   dot: "bg-orange-400",  stripe: "border-l-orange-400" },
+  { chip: "bg-teal-100 text-teal-800",       dot: "bg-teal-500",    stripe: "border-l-teal-500" },
+  { chip: "bg-lime-100 text-lime-800",       dot: "bg-lime-500",    stripe: "border-l-lime-500" },
+  { chip: "bg-fuchsia-100 text-fuchsia-800", dot: "bg-fuchsia-500", stripe: "border-l-fuchsia-500" },
+  { chip: "bg-indigo-100 text-indigo-800",   dot: "bg-indigo-500",  stripe: "border-l-indigo-500" },
+];
+const NO_CATEGORY_COLOR = { chip: "bg-gray-100 text-gray-600", dot: "bg-gray-400", stripe: "border-l-gray-300" };
+function categoryColor(category) {
+  const key = (category || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (!key) return NO_CATEGORY_COLOR;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return CATEGORY_COLORS[h % CATEGORY_COLORS.length];
+}
+function profitTone(pct) {
+  return pct >= 35 ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+       : pct >= 20 ? "bg-amber-50 text-amber-700 ring-amber-200"
+       : "bg-rose-50 text-rose-700 ring-rose-200";
 }
 
 function Pill({ children, color = "misky" }) {
@@ -4591,7 +4643,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
                     return (
                       <div key={r.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${qty > 0 ? "border-misky-300 bg-misky-50" : "border-gray-100 bg-white hover:bg-gray-50"}`}>
                         <input type="checkbox" checked={qty > 0}
-                          onChange={() => toggle(r.id)}
+                          onChange={() => { setAddOpen(true); toggle(r.id); }}
                           className="w-5 h-5 accent-misky-500 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-gray-800 text-sm">{r.name}</p>
@@ -4800,6 +4852,7 @@ function ComandaTab({ recipes, ingredients, business, profile, cartSel, cartBatc
 function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                       cartSel, setCartSel, cartBatch, setCartBatch, cartLabel, setCartLabel,
                       search, setSearch }) {
+  const isNarrow = useIsNarrow();
   const canEdit = canEditTabPerms(profile, "dashboard") || profile?.role === "admin";
   const totalFixed = (business.fixed_costs || []).reduce((s, c) => s + (c.amount || 0), 0);
   const cfUnit     = business.monthly_units > 0 ? totalFixed / business.monthly_units : 0;
@@ -4900,10 +4953,18 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
     profit:   x => x.c.realProfitPct,
   };
 
+  // Botones de categoría arriba de la lista, para filtrar con un toque.
+  const [catFilter, setCatFilter] = useState(null);
+  const categoryCounts = useMemo(() => {
+    const m = new Map();
+    recipes.forEach(r => { const k = (r.category || "").trim() || "Sin categoría"; m.set(k, (m.get(k) || 0) + 1); });
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "es"));
+  }, [recipes]);
   let filteredRows = recipeRows.filter(({ r }) =>
     (normalizeText(r.name).includes(normalizeText(search)) ||
      normalizeText(r.category || "").includes(normalizeText(search))) &&
-    (!onlyMissingPrice || missingPriceMap.has(r.id))
+    (!onlyMissingPrice || missingPriceMap.has(r.id)) &&
+    (!catFilter || ((r.category || "").trim() || "Sin categoría") === catFilter)
   );
   if (sortBy) {
     const key = SORT_KEYS[sortBy];
@@ -5108,20 +5169,44 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <Pill color="misky">{filteredRecipes.length} receta{filteredRecipes.length !== 1 ? "s" : ""}</Pill>
           </div>
         </div>
+        {categoryCounts.length > 1 && (
+          <div className="px-5 py-3 border-b border-gray-100 flex gap-2 overflow-x-auto">
+            <button onClick={() => setCatFilter(null)}
+              className={`flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors ${!catFilter ? "bg-misky-600 text-white shadow-sm" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+              Todas · {recipes.length}
+            </button>
+            {categoryCounts.map(([cat, n]) => {
+              const col = categoryColor(cat === "Sin categoría" ? "" : cat);
+              const on = catFilter === cat;
+              return (
+                <button key={cat} onClick={() => setCatFilter(on ? null : cat)}
+                  className={`flex-shrink-0 inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${on ? `${col.chip} ring-2 ring-offset-1 ring-current shadow-sm` : `${col.chip} opacity-80 hover:opacity-100`}`}>
+                  <span className={`w-2 h-2 rounded-full ${col.dot}`} />
+                  {cat} · {n}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {/* Celular: en pantallas angostas la tabla obligaba a girar el teléfono
             para llegar a la columna Categoría. Acá va una tarjeta por receta,
             con la categoría editable igual que en la tabla, sin scroll lateral. */}
-        <div className="sm:hidden divide-y divide-gray-50">
+        {isNarrow && (
+        <div className="sm:hidden p-3 space-y-2 bg-gray-50/60">
           {filteredRows.map(({ r, c }) => {
+            const col = categoryColor(r.category);
             return (
-              <div key={r.id} className={`p-4 ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
-                <div className="flex items-start gap-2">
+              <div key={r.id} className={`bg-white rounded-xl border border-gray-100 border-l-4 ${col.stripe} shadow-sm p-3 transition-colors ${cartSel?.[r.id] ? "ring-2 ring-misky-300 bg-misky-50/60" : ""}`}>
+                <div className="flex items-start gap-3">
                   {canEdit && (
                     <input type="checkbox" checked={!!cartSel?.[r.id]} onChange={() => toggleSelect(r.id)}
-                      className="w-4 h-4 accent-misky-500 mt-1" />
+                      className="w-5 h-5 accent-misky-500 mt-2.5 flex-shrink-0" />
                   )}
+                  <div className={`w-10 h-10 rounded-full ${col.dot} text-white font-bold flex items-center justify-center flex-shrink-0 shadow-sm`}>
+                    {(r.name || "?").trim()[0]?.toUpperCase()}
+                  </div>
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-800 text-sm">
+                    <p className="font-semibold text-gray-800 text-sm leading-snug">
                       {r.name}
                       {missingPriceMap.has(r.id) && (
                         <span title={`Falta precio: ${missingPriceMap.get(r.id).join(", ")}`} className="ml-1 cursor-help">⚠️</span>
@@ -5137,25 +5222,27 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                       ) : (
                         <span onClick={canEdit ? () => startEditCat(r) : undefined}
                           title={canEdit ? "Tocar para editar" : undefined}
-                          className={`text-xs ${canEdit ? "cursor-text hover:bg-amber-50 rounded px-1 -mx-1 border-b border-dotted border-gray-300 text-gray-500" : "text-gray-500"}`}>
+                          className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${col.chip} ${canEdit ? "cursor-text" : ""}`}>
                           {r.category || "Sin categoría"}
                         </span>
                       )}
-                      <span className="text-xs text-gray-400"> · {r.portions} porc.</span>
+                      <span className="text-xs text-gray-400 ml-1.5">{r.portions} porc.</span>
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="font-bold text-misky-600 text-sm">${c.roundedPrice.toLocaleString("es-AR")}</p>
-                    <Pill color={c.realProfitPct >= 35 ? "misky" : c.realProfitPct >= 20 ? "amber" : "rose"}>
+                    <p className="font-extrabold text-misky-700 text-base leading-tight">${c.roundedPrice.toLocaleString("es-AR")}</p>
+                    <span className={`inline-block mt-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ring-1 ${profitTone(c.realProfitPct)}`}>
                       {c.realProfitPct.toFixed(1)}%
-                    </Pill>
+                    </span>
                   </div>
                 </div>
               </div>
             );
           })}
         </div>
+        )}
         <div className="hidden sm:block overflow-x-auto">
+          {!isNarrow && (
           <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
@@ -5184,17 +5271,24 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
             <tbody>
               {filteredRows.map(({ r, c }, idx) => {
                 return (
-                  <tr key={r.id} className={`border-b border-gray-50 ${idx % 2 === 0 ? "bg-white" : "bg-gray-50/30"} ${cartSel?.[r.id] ? "bg-misky-50/60" : ""}`}>
+                  <tr key={r.id} className={`border-b border-gray-50 transition-colors hover:bg-misky-50/40 ${cartSel?.[r.id] ? "bg-misky-50/60" : idx % 2 === 0 ? "bg-white" : "bg-gray-50/40"}`}>
                     {canEdit && (
                       <td className="px-4 py-3">
                         <input type="checkbox" checked={!!cartSel?.[r.id]} onChange={() => toggleSelect(r.id)} className="w-4 h-4 accent-misky-500" />
                       </td>
                     )}
-                    <td className="px-4 py-3 font-medium text-gray-800">
-                      {r.name}
-                      {missingPriceMap.has(r.id) && (
-                        <span title={`Falta precio: ${missingPriceMap.get(r.id).join(", ")}`} className="ml-1 cursor-help">⚠️</span>
-                      )}
+                    <td className={`px-4 py-3 font-semibold text-gray-800 border-l-4 ${categoryColor(r.category).stripe}`}>
+                      <div className="flex items-center gap-3">
+                        <span className={`w-8 h-8 rounded-full ${categoryColor(r.category).dot} text-white text-sm font-bold flex items-center justify-center flex-shrink-0 shadow-sm`}>
+                          {(r.name || "?").trim()[0]?.toUpperCase()}
+                        </span>
+                        <span>
+                          {r.name}
+                          {missingPriceMap.has(r.id) && (
+                            <span title={`Falta precio: ${missingPriceMap.get(r.id).join(", ")}`} className="ml-1 cursor-help">⚠️</span>
+                          )}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       {editCatId === r.id ? (
@@ -5206,24 +5300,25 @@ function Dashboard({ recipes, ingredients, setRecipes, business, profile,
                       ) : (
                         <span onClick={canEdit ? () => startEditCat(r) : undefined}
                           title={canEdit ? "Click para editar" : undefined}
-                          className={canEdit ? "cursor-text hover:bg-amber-50 rounded px-1 -mx-1 border-b border-dotted border-transparent hover:border-gray-300 text-gray-500" : "text-gray-500"}>
+                          className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${categoryColor(r.category).chip} ${canEdit ? "cursor-text hover:ring-2 hover:ring-offset-1 hover:ring-current" : ""}`}>
                           {r.category || "Sin categoría"}
                         </span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{r.portions}</td>
                     <td className="px-4 py-3 text-rose-600 font-medium">${c.totalCost.toFixed(2)}</td>
-                    <td className="px-4 py-3 font-bold text-misky-600 text-base">${c.roundedPrice.toLocaleString("es-AR")}</td>
+                    <td className="px-4 py-3 font-extrabold text-misky-700 text-base">${c.roundedPrice.toLocaleString("es-AR")}</td>
                     <td className="px-4 py-3">
-                      <Pill color={c.realProfitPct >= 35 ? "misky" : c.realProfitPct >= 20 ? "amber" : "rose"}>
+                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ring-1 ${profitTone(c.realProfitPct)}`}>
                         {c.realProfitPct.toFixed(1)}%
-                      </Pill>
+                      </span>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          )}
         </div>
         {recipes.length === 0 && <div className="text-center py-10 text-gray-400">Creá tu primera receta en la pestaña Recetas</div>}
         {recipes.length > 0 && filteredRecipes.length === 0 && (
@@ -5537,10 +5632,11 @@ export default function App() {
   const [dashSearch, setDashSearch]         = useState("");
 
   useEffect(() => { try { localStorage.setItem("recetapp_last_tab", tab); } catch {} }, [tab]);
-  // Recuerda en cuál de Resumen / Recetas / Pedido se estaba, para volver
-  // ahí al tocar esa pestaña del menú.
+  // Recuerda en qué pestaña de cada grupo se estaba, para volver ahí al
+  // tocar ese grupo en el menú.
   useEffect(() => {
-    if (["dashboard", "recipes", "comanda"].includes(tab)) { try { localStorage.setItem("recetapp_last_group_tab", tab); } catch {} }
+    const gi = [["dashboard", "comanda", "miseenplace"], ["recipes", "ingredients"]].findIndex(g => g.includes(tab));
+    if (gi >= 0) { try { localStorage.setItem("recetapp_last_group_tab_" + gi, tab); } catch {} }
   }, [tab]);
 
   // Si la pestaña recordada ya no es válida para este perfil (cambiaron sus
@@ -5650,19 +5746,28 @@ export default function App() {
     { id:"miseenplace", label:"🔪 Mise en place",  show: !esMozo && canSeeTab("recipes") },
     { id:"settings",    label:"⚙️ Ajustes",        show: (!esMozo && canSeeTab("business")) || profile?.permissions?.usuarios === true },
   ].filter(t => t.show);
-  // Resumen, Recetas y Pedido van juntos en una sola pestaña del menú, con
-  // botones arriba para pasar de una a otra (en el celular el menú de abajo
-  // queda con menos íconos). Cada usuario ve solo las que tiene permitidas;
-  // si ve una sola (ej. el Mozo, solo Pedido), no aparecen los botones.
-  const GROUP_IDS = ["dashboard", "recipes", "comanda"];
-  const groupTabs = TABS.filter(t => GROUP_IDS.includes(t.id));
-  const inGroup = GROUP_IDS.includes(tab);
-  const lastGroupTab = (() => { try { return localStorage.getItem("recetapp_last_group_tab"); } catch { return null; } })();
-  const goGroup = () => setTab(groupTabs.find(t => t.id === lastGroupTab)?.id || groupTabs[0].id);
+  // Las pestañas van agrupadas por para qué se usan, para que el menú tenga
+  // menos íconos: (1) Resumen, Pedido y Mise en place, que trabajan con las
+  // recetas tildadas; (2) Recetas e Ingredientes, para cargar y corregir
+  // datos. Adentro de cada grupo hay botones arriba para pasar de una a otra.
+  // Cada usuario ve solo las que tiene permitidas; si de un grupo ve una
+  // sola (ej. el Mozo, solo Pedido), no aparecen los botones.
+  const TAB_GROUPS = [["dashboard", "comanda", "miseenplace"], ["recipes", "ingredients"]];
+  const groupOf = (id) => TAB_GROUPS.findIndex(g => g.includes(id));
+  const groupTabsOf = (gi) => TAB_GROUPS[gi].map(id => TABS.find(t => t.id === id)).filter(Boolean);
+  const currentGroup = groupOf(tab);
+  const groupTabs = currentGroup >= 0 ? groupTabsOf(currentGroup) : [];
   const MENU = [];
   TABS.forEach(t => {
-    if (!GROUP_IDS.includes(t.id)) MENU.push({ ...t, active: tab === t.id, go: () => setTab(t.id) });
-    else if (t === groupTabs[0]) MENU.push({ id: "group", label: t.label, active: inGroup, go: goGroup });
+    const gi = groupOf(t.id);
+    if (gi < 0) { MENU.push({ ...t, active: tab === t.id, go: () => setTab(t.id) }); return; }
+    const members = groupTabsOf(gi);
+    if (members[0] !== t) return;
+    MENU.push({ ...t, id: "group" + gi, active: currentGroup === gi, go: () => {
+      let last = null;
+      try { last = localStorage.getItem("recetapp_last_group_tab_" + gi); } catch {}
+      setTab(members.find(m => m.id === last)?.id || members[0].id);
+    } });
   });
 
   return (
@@ -5720,11 +5825,11 @@ export default function App() {
         })}
       </nav>
       <main className="max-w-7xl mx-auto px-4 py-5 pb-24 md:pb-5">
-        {inGroup && groupTabs.length > 1 && (
-          <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-4 max-w-md">
+        {groupTabs.length > 1 && (
+          <div className="flex gap-1 bg-gray-100 rounded-xl p-1 mb-4 max-w-lg">
             {groupTabs.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${tab === t.id ? "bg-white text-misky-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+                className={`flex-1 min-w-0 px-1 py-2 text-xs sm:text-sm font-medium leading-tight rounded-lg transition-colors ${tab === t.id ? "bg-white text-misky-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
                 {t.label}
               </button>
             ))}
